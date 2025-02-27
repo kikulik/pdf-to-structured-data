@@ -7,7 +7,6 @@ import { FileIcon, FileText } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 
 export default function Home() {
-  const [prompt, setPrompt] = useState("");
   const [schema, setSchema] = useState<string | null>(null);
   const [file, setFile] = useState<File | null>(null);
   const [result, setResult] = useState<string | null>(null);
@@ -21,7 +20,6 @@ export default function Home() {
     try {
       setLoading(true);
       // First, get the JSON schema
-      setPrompt(prompt);
       const schemaResponse = await fetch("/api/schema", {
         method: "POST",
         headers: {
@@ -33,7 +31,6 @@ export default function Home() {
       const { schema } = await schemaResponse.json();
 
       setSchema(schema);
-      setPrompt(prompt);
       // Then, process the PDF with the schema
       const formData = new FormData();
       formData.append("file", file!);
@@ -56,7 +53,6 @@ export default function Home() {
   const handleReset = () => {
     setFile(null);
     setResult(null);
-    setPrompt("");
     setSchema(null);
     setLoading(false);
   };
