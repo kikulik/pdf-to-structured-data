@@ -4,6 +4,7 @@ emoji: 🌍
 colorFrom: purple
 colorTo: gray
 sdk: docker
+header: mini
 app_port: 3000
 pinned: false
 license: apache-2.0
