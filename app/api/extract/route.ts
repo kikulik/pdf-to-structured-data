@@ -41,7 +41,10 @@ export async function POST(request: Request) {
   } catch (error) {
     console.error("Error extracting data:", error);
     return NextResponse.json(
-      { error: "Failed to extract data" },
+      {
+        error:
+          "Failed to extract data, open a thread in discussions, could be be a rate limit issue.s",
+      },
       { status: 500 }
     );
   }
