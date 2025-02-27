@@ -81,6 +81,3 @@ body {
 h1,h2,h3,h4,h5,h6 {
   @apply text-foreground dark:text-foreground;
 }
-
-.react-pdf__Page__canvas { display: inline-block; width: auto !important; height: 100% !important; }
-
