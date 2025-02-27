@@ -3,7 +3,7 @@
 # Adapted from https://github.com/vercel/next.js/blob/e60a1e747c3f521fc24dfd9ee2989e13afeb0a9b/examples/with-docker/Dockerfile
 # For more information, see https://nextjs.org/docs/pages/building-your-application/deploying#docker-image
 
-FROM node:18 AS base
+FROM node:20 AS base
 
 # Install dependencies only when needed
 FROM base AS deps
