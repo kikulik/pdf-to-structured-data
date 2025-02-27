@@ -137,7 +137,10 @@ export async function POST(request: Request) {
   } catch (error) {
     console.error("Error generating schema:", error);
     return NextResponse.json(
-      { error: "Failed to generate schema" },
+      {
+        error:
+          "Failed to generate schema, open a thread in discussions, could be be a rate limit issue.",
+      },
       { status: 500 }
     );
   }
