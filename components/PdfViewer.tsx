@@ -53,7 +53,10 @@ export default function PdfViewer({ file }: { file: File }) {
         <SheetHeader>
           <SheetTitle>{file.name}</SheetTitle>
         </SheetHeader>
-        <div ref={setContainerRef} className="max-w-2xl mx-auto mt-2">
+        <div
+          ref={setContainerRef}
+          className="max-w-2xl mx-auto mt-2 max-h-[calc(100vh-10rem)] overflow-y-auto"
+        >
           <Document
             file={file}
             onLoadSuccess={onDocumentLoadSuccess}
