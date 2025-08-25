@@ -1,78 +1,67 @@
+// components/ResultDisplay.tsx
 "use client";
+import * as XLSX from "xlsx";
 
-import { Button } from "@/components/ui/button";
-import { Braces, Copy, RotateCcw } from "lucide-react";
-import { useState } from "react";
-import {
-  Popover,
-  PopoverContent,
-  PopoverTrigger,
-} from "@/components/ui/popover";
-interface ResultDisplayProps {
-  result: string;
-  schema: string;
-  onReset: () => void;
-}
+type Row = Record<string, any>;
 
-export function ResultDisplay({ result, schema, onReset }: ResultDisplayProps) {
-  const [copied, setCopied] = useState(false);
-  const [schemaCopied, setSchemaCopied] = useState(false);
+export default function ResultDisplay({ rows }: { rows: Row[] }) {
+  if (!rows?.length) return null;
 
-  const handleCopy = () => {
-    navigator.clipboard.writeText(JSON.stringify(result, null, 2));
-    setCopied(true);
-    setTimeout(() => setCopied(false), 2000);
+  const keys = Object.keys(rows[0]);
+
+  const downloadJSON = () => {
+    const blob = new Blob([JSON.stringify(rows, null, 2)], { type: "application/json" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = "prices.json";
+    a.click();
+    URL.revokeObjectURL(url);
   };
-  const handleSchemaCopy = () => {
-    navigator.clipboard.writeText(JSON.stringify(schema, null, 2));
-    setSchemaCopied(true);
-    setTimeout(() => setSchemaCopied(false), 2000);
+
+  const downloadXLSX = () => {
+    const ws = XLSX.utils.json_to_sheet(rows);
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws, "Prices");
+    const out = XLSX.write(wb, { bookType: "xlsx", type: "array" });
+    const blob = new Blob([out], { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = "prices.xlsx";
+    a.click();
+    URL.revokeObjectURL(url);
   };
 
   return (
-    <div className="space-y-4">
-      <div className="flex items-center justify-between">
-        <h2 className="text-xl font-semibold">Extracted Data</h2>
-        <div className="space-x-2">
-          <Popover>
-            <PopoverTrigger>
-              <Button variant="outline" size="sm">
-                <Braces className="w-4 h-4 mr-2" />
-                Schema
-              </Button>
-            </PopoverTrigger>
-            <PopoverContent className="max-h-[500px] max-w-[700px] w-full overflow-y-auto">
-              <div className="relative p-4 rounded-lg bg-muted">
-                <Button
-                  variant="secondary"
-                  size="sm"
-                  onClick={handleSchemaCopy}
-                  className="absolute top-2 right-2"
-                >
-                  <Copy className="w-4 h-4 mr-2" />
-                  {schemaCopied ? "Copied!" : "Copy"}
-                </Button>
-                <pre className="overflow-auto">
-                  <code className="text-xs">
-                    {JSON.stringify(schema, null, 2)}
-                  </code>
-                </pre>
-              </div>
-            </PopoverContent>
-          </Popover>
-          <Button variant="outline" size="sm" onClick={handleCopy}>
-            <Copy className="w-4 h-4 mr-2" />
-            {copied ? "Copied!" : "Copy"}
-          </Button>
-          <Button variant="outline" size="sm" onClick={onReset}>
-            <RotateCcw className="w-4 h-4 mr-2" />
-            Process Another PDF
-          </Button>
-        </div>
+    <div className="space-y-3">
+      <div className="flex gap-2">
+        <button className="border px-3 py-2 rounded" onClick={downloadJSON}>Download JSON</button>
+        <button className="border px-3 py-2 rounded" onClick={downloadXLSX}>Download XLSX</button>
       </div>
-      <pre className="p-4 rounded-lg bg-muted overflow-auto">
-        <code className="text-sm">{JSON.stringify(result, null, 2)}</code>
-      </pre>
+
+      <div className="overflow-auto border rounded">
+        <table className="min-w-full text-sm">
+          <thead className="bg-gray-50 sticky top-0">
+            <tr>
+              {keys.map(k => (
+                <th key={k} className="text-left px-3 py-2 whitespace-nowrap">{k}</th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {rows.slice(0, 500).map((r, i) => (
+              <tr key={i} className="odd:bg-white even:bg-gray-50">
+                {keys.map(k => (
+                  <td key={k} className="px-3 py-2 whitespace-nowrap">{String(r[k] ?? "")}</td>
+                ))}
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+
+      {rows.length > 500 && <p className="text-xs opacity-70">Showing first 500 rows (download to see all).</p>}
     </div>
   );
 }
