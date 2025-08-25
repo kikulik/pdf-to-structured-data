@@ -39,7 +39,7 @@ type Meta = {
 async function pdfBufferToText(buf: Buffer): Promise<string> {
   // dynamic import so it’s never evaluated during build
   // legacy build works best in Node without a canvas
-  const pdfjs: any = await import("pdfjs-dist/legacy/build/pdf.js");
+  const pdfjs: any = await import("pdfjs-dist/build/pdf.mjs");
 
   const loadingTask = pdfjs.getDocument({
     data: buf,
