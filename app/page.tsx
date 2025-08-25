@@ -10,7 +10,7 @@ import type { PriceRow } from "@/lib/priceExtractor";
 type Meta = {
   supplier: string;
   manufacturer: string;
-  validityDate: string; // ISO 8601
+  validityDate: string; // ISO 8601 or ""
 };
 
 type ItemsPayload = {
@@ -19,7 +19,7 @@ type ItemsPayload = {
 
 export default function Home() {
   const [file, setFile] = useState<File | null>(null);
-  const [meta, setMeta] = useState({
+  const [meta, setMeta] = useState<Meta>({
     supplier: "",
     manufacturer: "",
     validityDate: "",
@@ -49,19 +49,25 @@ export default function Home() {
 
       const res = await fetch("/api/parse", { method: "POST", body: fd });
       if (!res.ok) {
-        const errText = await res.text().catch(() => "");
-        throw new Error(errText || "Failed to parse PDF.");
+        let msg = "Failed to parse PDF.";
+        try {
+          const j = await res.json();
+          if (j?.error) msg = `Parse error: ${j.error}`;
+        } catch {
+          // ignore body parse errors
+        }
+        throw new Error(msg);
       }
 
       const data: unknown = await res.json();
       const payload = data as ItemsPayload;
 
       if (payload.items) {
-        if (Array.isArray(payload.items)) {
-          setRows(payload.items);
-        } else {
-          setRows(Object.values(payload.items));
-        }
+        setRows(
+          Array.isArray(payload.items)
+            ? payload.items
+            : Object.values(payload.items)
+        );
       } else {
         setRows([]);
       }
