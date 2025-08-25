@@ -11,7 +11,7 @@ export type PriceRow = {
   T2List: number;
   T2Cost: number;
   ISOCurrency: "EUR" | "USD" | "GBP";
-  ValidityDate: string; // ISO 8601
+  ValidityDate: string; // ISO 8601 or ""
   T1orT2: "T1" | "T2";
   MaterialID: string;
   SAPNumber: string;
@@ -25,13 +25,13 @@ export type PriceRow = {
   LengthMm: number;
   WidthMm: number;
   PowerWatts: number;
-  FileName: string;
+  FileName: string; // we use source PDF name here
 };
 
 type Meta = {
   supplier: string;
   manufacturer: string;
-  validityDate: string; // ISO
+  validityDate: string; // ISO or ""
   fileName: string;
 };
 
@@ -60,6 +60,37 @@ const parseMoney = (s: string): number => {
 const MODEL_RX = /([A-Z0-9][A-Z0-9._/-]{2,})/gi;
 const PRICE_RX = /([€$£]?\s?\d{1,3}(?:[.,]\d{3})*(?:[.,]\d{2})?)/g;
 
+// very light heuristics to guess meta if user left them blank
+function guessMetaFromText(text: string): Partial<Meta> {
+  const lines = text.split(/\r?\n/).map(l => l.trim()).filter(Boolean);
+  const top = lines.slice(0, 50).join("\n");
+
+  // Manufacturer/Supplier: pick the longest ALL-CAPS word group near the top that isn't “PRICE LIST”
+  let mfg = "";
+  const capLines = top.split("\n").filter(l =>
+    /^[A-Z0-9 ()&.,/-]{6,}$/.test(l) && !/PRICE\s*LIST/i.test(l)
+  );
+  if (capLines.length) {
+    mfg = capLines.sort((a,b)=>b.length-a.length)[0];
+    // strip trailing punctuation
+    mfg = mfg.replace(/\s*[.,:;-]+$/, "").trim();
+  }
+
+  // Validity date: try YYYY-MM-DD or DD/MM/YYYY or Month YYYY
+  let validity = "";
+  const dateMatch =
+    top.match(/\b(20\d{2})[-/.](0[1-9]|1[0-2])[-/.](0[1-9]|[12]\d|3[01])\b/) ||
+    top.match(/\b(0[1-9]|[12]\d|3[01])[-/.](0[1-9]|1[0-2])[-/.](20\d{2})\b/) ||
+    top.match(/\b(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\s+20\d{2}\b/i);
+  if (dateMatch) validity = dateMatch[0];
+
+  return {
+    supplier: mfg || undefined,
+    manufacturer: mfg || undefined,
+    validityDate: validity || undefined,
+  };
+}
+
 const makeRow = (
   meta: Meta,
   currency: PriceRow["ISOCurrency"],
@@ -70,8 +101,8 @@ const makeRow = (
   const price = parseMoney(priceToken);
   const description = desc.trim() || modelCode;
   return {
-    Supplier: meta.supplier,
-    Manufacturer: meta.manufacturer,
+    Supplier: meta.supplier || "",
+    Manufacturer: meta.manufacturer || "",
     ModelCode: modelCode,
     ModelDescription: description,
     T1List: 0,
@@ -79,7 +110,7 @@ const makeRow = (
     T2List: price,
     T2Cost: price,
     ISOCurrency: currency,
-    ValidityDate: meta.validityDate,
+    ValidityDate: meta.validityDate || "",
     T1orT2: "T2",
     MaterialID: modelCode,
     SAPNumber: modelCode,
@@ -108,6 +139,15 @@ export async function extractFromPdf(
   const parsed = await pdfParse(buf);
   const text = parsed.text || "";
   const currency = currencyFromText(text);
+
+  // Merge user-provided (optional) meta with guesses
+  const guessed = guessMetaFromText(text);
+  const mergedMeta: Meta = {
+    supplier: meta.supplier || guessed.supplier || "",
+    manufacturer: meta.manufacturer || guessed.manufacturer || "",
+    validityDate: meta.validityDate || guessed.validityDate || "",
+    fileName: meta.fileName,
+  };
 
   const lines = text.split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
 
@@ -139,7 +179,7 @@ export async function extractFromPdf(
     for (const priceToken of priceMatches) {
       const model = contextCodes[contextCodes.length - 1] || `ITEM_${rows.length + 1}`;
       const desc = contextDesc.slice(-2).join(" ") || "Price Item";
-      rows.push(makeRow(meta, currency, model, desc, priceToken));
+      rows.push(makeRow(mergedMeta, currency, model, desc, priceToken));
     }
   }
 
