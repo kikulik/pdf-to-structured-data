@@ -97,16 +97,28 @@ export async function POST(request: Request) {
     }
 
     return NextResponse.json(extractedData);
-  } catch (err: any) {
+  } catch (err: unknown) {
+    // Narrow the unknown error to a safe shape for logging
+    const e = err as {
+      message?: string;
+      name?: string;
+      status?: number;
+      code?: string;
+      stack?: string;
+    };
+
     console.error("Error extracting data:", {
-      message: err?.message,
-      name: err?.name,
-      status: err?.status,
-      code: err?.code,
-      stack: err?.stack,
+      message: e?.message,
+      name: e?.name,
+      status: e?.status,
+      code: e?.code,
+      stack: e?.stack,
     });
 
-    const status = err?.status && Number.isInteger(err.status) ? err.status : 500;
+    const status =
+      typeof e?.status === "number" && Number.isInteger(e.status)
+        ? e.status
+        : 500;
 
     return NextResponse.json(
       {
@@ -120,4 +132,3 @@ export async function POST(request: Request) {
       { status }
     );
   }
-}
