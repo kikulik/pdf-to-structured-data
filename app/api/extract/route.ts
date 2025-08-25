@@ -69,20 +69,36 @@ export async function POST(request: Request) {
       );
     }
   } catch (err: unknown) {
-    const e = err as { message?: string; name?: string; status?: number; code?: string; stack?: string };
-    console.error("Error extracting data:", {
-      message: e?.message, name: e?.name, status: e?.status, code: e?.code, stack: e?.stack,
-    });
-
-    const status = typeof e?.status === "number" && Number.isInteger(e.status) ? e.status : 500;
+    const e = err as {
+      message?: string;
+      name?: string;
+      status?: number;
+      code?: string;
+      cause?: unknown;
+      stack?: string;
+    };
+  
+    // Log everything server-side
+    console.error("Error extracting data:", e);
+  
+    // Try to map status; otherwise infer from message
+    let status = typeof e?.status === "number" ? e.status : 500;
+    const msg = (e?.message || "").toLowerCase();
+  
+    if (status === 500) {
+      if (msg.includes("model") && msg.includes("not found")) status = 404;
+      else if (msg.includes("invalid") && msg.includes("schema")) status = 400;
+      else if (msg.includes("permission") || msg.includes("unauthorized")) status = 401;
+      else if (msg.includes("rate limit") || msg.includes("quota")) status = 429;
+      else if (msg.includes("too large") || msg.includes("content length") || msg.includes("payload too large")) status = 413;
+    }
+  
     return NextResponse.json(
       {
-        error:
-          status === 401
-            ? "Authentication failed. Check GEMINI_API_KEY server-side."
-            : status === 429
-            ? "Rate limited by the model API. Try again with a smaller file or later."
-            : "Failed to extract data.",
+        error: "Extraction failed.",
+        detail: e?.message ?? "Unknown error",
+        code: e?.code ?? undefined,
+        name: e?.name ?? undefined,
       },
       { status }
     );
