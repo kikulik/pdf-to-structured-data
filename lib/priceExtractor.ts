@@ -35,16 +35,20 @@ type Meta = {
   fileName: string;
 };
 
-// ----------- PDF TEXT (server) via pdfjs-dist (no fs paths, no workers) -----------
+// ----------- PDF TEXT (server) via pdfjs-dist (no workers, no fs) -----------
 async function pdfBufferToText(buf: Buffer): Promise<string> {
-  // dynamic import so it’s never evaluated during build
-  // legacy build works best in Node without a canvas
-  const pdfjs: any = await import("pdfjs-dist/build/pdf.mjs");
+  // Import the package root (exported by all versions) — avoid deep paths.
+  const pdfjs: any = await import("pdfjs-dist");
+
+  // Ensure we don't spawn a worker in this server environment
+  if (pdfjs.GlobalWorkerOptions) {
+    pdfjs.GlobalWorkerOptions.workerSrc = undefined;
+  }
 
   const loadingTask = pdfjs.getDocument({
     data: buf,
+    disableWorker: true,
     isEvalSupported: false,
-    useSystemFonts: true,
   });
 
   const pdf = await loadingTask.promise;
