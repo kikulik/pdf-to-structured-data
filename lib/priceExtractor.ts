@@ -115,7 +115,7 @@ export async function extractFromPdf(
   const rows: PriceRow[] = [];
   // keep a sliding buffer of recent “context” tokens
   let contextCodes: string[] = [];
-  let contextDesc: string[] = [];
+  const contextDesc: string[] = [];
 
   const pushContext = (line: string) => {
     // accumulate potential model codes
