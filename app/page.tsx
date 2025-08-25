@@ -19,10 +19,10 @@ type ItemsPayload = {
 
 export default function Home() {
   const [file, setFile] = useState<File | null>(null);
-  const [meta, setMeta] = useState<Meta>({
-    supplier: "UAB TVC Solutions",
-    manufacturer: "Unknown",
-    validityDate: "2154-12-31T00:00:00",
+  const [meta, setMeta] = useState({
+    supplier: "",
+    manufacturer: "",
+    validityDate: "",
   });
   const [rows, setRows] = useState<PriceRow[]>([]);
   const [loading, setLoading] = useState(false);
