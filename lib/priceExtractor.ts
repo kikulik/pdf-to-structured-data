@@ -35,10 +35,38 @@ type Meta = {
   fileName: string;
 };
 
+// ---- Minimal typings for pdfjs-dist we use server-side ----
+type PDFJSModule = {
+  GlobalWorkerOptions?: { workerSrc?: unknown };
+  getDocument: (
+    options:
+      | string
+      | {
+          data?: Buffer | Uint8Array | ArrayBuffer;
+          disableWorker?: boolean;
+          isEvalSupported?: boolean;
+        }
+  ) => { promise: Promise<PDFDocumentProxy> };
+};
+
+type TextItem = { str?: string };
+type TextContent = { items: TextItem[] };
+
+type PDFPageProxy = {
+  getTextContent(): Promise<TextContent>;
+};
+
+type PDFDocumentProxy = {
+  numPages: number;
+  getPage(pageNumber: number): Promise<PDFPageProxy>;
+  cleanup?: () => void;
+};
+
 // ----------- PDF TEXT (server) via pdfjs-dist (no workers, no fs) -----------
 async function pdfBufferToText(buf: Buffer): Promise<string> {
-  // Import the package root (exported by all versions) — avoid deep paths.
-  const pdfjs: any = await import("pdfjs-dist");
+  // Import the package root (stable across versions)
+  const pdfjsMod: unknown = await import("pdfjs-dist");
+  const pdfjs = pdfjsMod as PDFJSModule;
 
   // Ensure we don't spawn a worker in this server environment
   if (pdfjs.GlobalWorkerOptions) {
@@ -53,17 +81,21 @@ async function pdfBufferToText(buf: Buffer): Promise<string> {
 
   const pdf = await loadingTask.promise;
   let out = "";
+
   for (let i = 1; i <= pdf.numPages; i++) {
     const page = await pdf.getPage(i);
     const content = await page.getTextContent();
-    const textLine = (content.items as any[])
-      .map((it) => (typeof it?.str === "string" ? it.str : ""))
-      .join(" ");
+    const items: TextItem[] = content.items;
+    const textLine = items.map((it) => (typeof it.str === "string" ? it.str : "")).join(" ");
     out += textLine + "\n";
   }
+
   try {
     pdf.cleanup?.();
-  } catch {}
+  } catch {
+    // no-op
+  }
+
   return out;
 }
 
@@ -98,13 +130,11 @@ function guessMetaFromText(text: string): Partial<Meta> {
   const lines = text.split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
   const top = lines.slice(0, 50).join("\n");
 
-  // Manufacturer/Supplier: pick the longest ALL-CAPS word group near the top that isn't “PRICE LIST”
+  // Manufacturer/Supplier: pick the longest ALL-CAPS group near the top that isn't “PRICE LIST”
   let mfg = "";
   const capLines = top
     .split("\n")
-    .filter(
-      (l) => /^[A-Z0-9 ()&.,/-]{6,}$/.test(l) && !/PRICE\s*LIST/i.test(l)
-    );
+    .filter((l) => /^[A-Z0-9 ()&.,/-]{6,}$/.test(l) && !/PRICE\s*LIST/i.test(l));
   if (capLines.length) {
     mfg = capLines.sort((a, b) => b.length - a.length)[0];
     mfg = mfg.replace(/\s*[.,:;-]+$/, "").trim();
@@ -115,9 +145,7 @@ function guessMetaFromText(text: string): Partial<Meta> {
   const dateMatch =
     top.match(/\b(20\d{2})[-/.](0[1-9]|1[0-2])[-/.](0[1-9]|[12]\d|3[01])\b/) ||
     top.match(/\b(0[1-9]|[12]\d|3[01])[-/.](0[1-9]|1[0-2])[-/.](20\d{2})\b/) ||
-    top.match(
-      /\b(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\s+20\d{2}\b/i
-    );
+    top.match(/\b(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\s+20\d{2}\b/i);
   if (dateMatch) validity = dateMatch[0];
 
   return {
