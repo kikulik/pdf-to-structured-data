@@ -6,6 +6,8 @@ import { PromptInput } from "@/components/PromptInput";
 import { ResultDisplay } from "@/components/ResultDisplay";
 import { FileIcon, FileText } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import MetaForm from "@/components/MetaForm";
+
 
 /** Narrow an unknown JSON value into a simple error payload shape */
 function toErrorPayload(u: unknown): {
@@ -42,6 +44,8 @@ export default function Home() {
   const [file, setFile] = useState<File | null>(null);
   const [result, setResult] = useState<unknown>(null);
   const [loading, setLoading] = useState(false);
+  const [meta, setMeta] = useState({ supplier: "UAB TVC Solutions", manufacturer: "Unknown", validityDate: "2154-12-31T00:00:00" });
+  const [parsedRows, setParsedRows] = useState<any[]>([])
 
   const handleFileSelect = (selectedFile: File) => {
     setFile(selectedFile);
