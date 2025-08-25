@@ -2,8 +2,10 @@
 import { NextResponse } from "next/server";
 import { extractFromPdf } from "@/lib/priceExtractor";
 
+export const dynamic = "force-dynamic"; // prevent static optimization
 export const runtime = "nodejs";
 export const maxDuration = 300; // plenty for large PDFs
+
 
 export async function POST(req: Request) {
   const form = await req.formData();
