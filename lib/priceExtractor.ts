@@ -46,26 +46,20 @@ const currencyFromText = (txt: string): "EUR" | "USD" | "GBP" => {
 const parseMoney = (s: string): number => {
   let x = s.replace(/[^\d.,]/g, "").trim();
   if (!x) return 0;
-  // if both , and . exist, assume last two digits are cents, remove the thousands sep
   if (x.includes(",") && x.includes(".")) {
     const lastComma = x.lastIndexOf(",");
     const lastDot = x.lastIndexOf(".");
-    if (lastComma > lastDot) x = x.replace(/\./g, ""); // 1.234,56
-    else x = x.replace(/,/g, ""); // 1,234.56
+    if (lastComma > lastDot) x = x.replace(/\./g, "");
+    else x = x.replace(/,/g, "");
   }
-  // now there’s at most one separator
   x = x.replace(",", ".");
   const n = Number(x);
-  return Number.isFinite(n) ? Math.round(n) : 0; // emit whole units like your sample
+  return Number.isFinite(n) ? Math.round(n) : 0;
 };
 
-// very permissive model-code matcher (letters/digits/slashes/dots/dashes/underscores)
 const MODEL_RX = /([A-Z0-9][A-Z0-9._/-]{2,})/gi;
-
-// price token with or without currency sign
 const PRICE_RX = /([€$£]?\s?\d{1,3}(?:[.,]\d{3})*(?:[.,]\d{2})?)/g;
 
-// Heuristic: walk lines; when we see a price, use recent tokens above/left as code+desc
 const makeRow = (
   meta: Meta,
   currency: PriceRow["ISOCurrency"],
@@ -107,7 +101,7 @@ export async function extractFromPdf(
   file: ArrayBuffer,
   meta: Meta
 ): Promise<PriceRow[]> {
-  // lazy-load to avoid build-time analysis and keep route dynamic
+  // lazy-load to avoid build-time analysis; only load when the route is called
   const { default: pdfParse } = await import("pdf-parse");
 
   const buf = Buffer.from(file);
@@ -115,41 +109,33 @@ export async function extractFromPdf(
   const text = parsed.text || "";
   const currency = currencyFromText(text);
 
-  // split into lines and do a rolling window
   const lines = text.split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
 
   const rows: PriceRow[] = [];
-  // keep a sliding buffer of recent “context” tokens
   let contextCodes: string[] = [];
   const contextDesc: string[] = [];
 
   const pushContext = (line: string) => {
-    // accumulate potential model codes
     const codes = Array.from(line.matchAll(MODEL_RX))
       .map((m) => m[1])
-      .filter((c) => /[A-Za-z]/.test(c) && /\d/.test(c)); // require alnum mix
+      .filter((c) => /[A-Za-z]/.test(c) && /\d/.test(c));
     if (codes.length) contextCodes = codes.slice(-6);
 
-    // description candidates: words minus raw currency tokens
     const cleaned = line.replace(PRICE_RX, "").trim();
     if (cleaned) {
-      // keep last few description lines
       contextDesc.push(cleaned);
       if (contextDesc.length > 4) contextDesc.shift();
     }
   };
 
   for (const line of lines) {
-    // collect context first
     pushContext(line);
 
-    // find one or more prices in this line
     const priceMatches = Array.from(line.matchAll(PRICE_RX))
       .map((m) => m[1])
       .filter(Boolean);
     if (!priceMatches.length) continue;
 
-    // for each price, emit a row. try to pair with the last seen model code, else synthesize one
     for (const priceToken of priceMatches) {
       const model = contextCodes[contextCodes.length - 1] || `ITEM_${rows.length + 1}`;
       const desc = contextDesc.slice(-2).join(" ") || "Price Item";
@@ -157,7 +143,6 @@ export async function extractFromPdf(
     }
   }
 
-  // simple de-dup: model+price
   const seen = new Set<string>();
   const deduped = rows.filter((r) => {
     const key = `${r.ModelCode}|${r.T2List}`;
