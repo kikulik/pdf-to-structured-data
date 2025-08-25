@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { GoogleGenerativeAI } from "@google/generative-ai";
+import { GoogleGenerativeAI, type GenerateContentResult } from "@google/generative-ai";
 
 // Fail fast if the key is missing (otherwise you only see a generic 500)
 function requireEnv(name: string) {
@@ -24,8 +24,8 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: "No schema provided." }, { status: 400 });
     }
 
-    // Guard: limit max size to something sane to avoid blowing requests up
-    const MAX_BYTES = 100 * 1024 * 1024; // 100MB UI limit
+    // UI already limits to 100MB; keep the server guard too
+    const MAX_BYTES = 100 * 1024 * 1024;
     if (file.size > MAX_BYTES) {
       return NextResponse.json({ error: "File too large." }, { status: 413 });
     }
@@ -43,11 +43,12 @@ export async function POST(request: Request) {
     const prompt = "Extract the structured data from the following PDF file.";
 
     const INLINE_LIMIT = 18 * 1024 * 1024; // ~18MB
-    
+    let result: GenerateContentResult;
+
     if (file.size <= INLINE_LIMIT) {
       const buffer = Buffer.from(await file.arrayBuffer());
       const base64 = buffer.toString("base64");
-    
+
       result = await model.generateContent([
         { text: prompt },
         { inlineData: { mimeType: "application/pdf", data: base64 } },
