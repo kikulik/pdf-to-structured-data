@@ -9,9 +9,9 @@ export async function POST(req: Request) {
   try {
     const form = await req.formData();
 
-    const supplier = String(form.get("supplier") || "Supplier");
-    const manufacturer = String(form.get("manufacturer") || "Manufacturer");
-    const validityDate = String(form.get("validityDate") || "2154-12-31T00:00:00");
+    const supplier = String(form.get("supplier") ?? "").trim();
+    const manufacturer = String(form.get("manufacturer") ?? "").trim();
+    const validityDate = String(form.get("validityDate") ?? "").trim();
 
     const file = form.get("file") as File | null;
     if (!file) {
@@ -23,12 +23,11 @@ export async function POST(req: Request) {
       supplier,
       manufacturer,
       validityDate,
-      fileName: file.name,
+      fileName: file.name, // source filename
     });
 
     return NextResponse.json({ items });
   } catch (e: unknown) {
-    // Log to server console (visible in HF Space Logs)
     console.error("parse route error:", e);
     const msg = e instanceof Error ? e.message : "Parse failed";
     const stack = e instanceof Error ? e.stack : undefined;
