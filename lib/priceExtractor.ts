@@ -25,7 +25,7 @@ export type PriceRow = {
   LengthMm: number;
   WidthMm: number;
   PowerWatts: number;
-  FileName: string; // we use source PDF name here
+  FileName: string; // source PDF file name
 };
 
 type Meta = {
@@ -35,6 +35,35 @@ type Meta = {
   fileName: string;
 };
 
+// ----------- PDF TEXT (server) via pdfjs-dist (no fs paths, no workers) -----------
+async function pdfBufferToText(buf: Buffer): Promise<string> {
+  // dynamic import so it’s never evaluated during build
+  // legacy build works best in Node without a canvas
+  const pdfjs: any = await import("pdfjs-dist/legacy/build/pdf.js");
+
+  const loadingTask = pdfjs.getDocument({
+    data: buf,
+    isEvalSupported: false,
+    useSystemFonts: true,
+  });
+
+  const pdf = await loadingTask.promise;
+  let out = "";
+  for (let i = 1; i <= pdf.numPages; i++) {
+    const page = await pdf.getPage(i);
+    const content = await page.getTextContent();
+    const textLine = (content.items as any[])
+      .map((it) => (typeof it?.str === "string" ? it.str : ""))
+      .join(" ");
+    out += textLine + "\n";
+  }
+  try {
+    pdf.cleanup?.();
+  } catch {}
+  return out;
+}
+
+// ----------- helpers -----------
 const currencyFromText = (txt: string): "EUR" | "USD" | "GBP" => {
   if (txt.includes("€") || /\bEUR\b/i.test(txt)) return "EUR";
   if (txt.includes("$") || /\bUSD\b/i.test(txt)) return "USD";
@@ -62,17 +91,18 @@ const PRICE_RX = /([€$£]?\s?\d{1,3}(?:[.,]\d{3})*(?:[.,]\d{2})?)/g;
 
 // very light heuristics to guess meta if user left them blank
 function guessMetaFromText(text: string): Partial<Meta> {
-  const lines = text.split(/\r?\n/).map(l => l.trim()).filter(Boolean);
+  const lines = text.split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
   const top = lines.slice(0, 50).join("\n");
 
   // Manufacturer/Supplier: pick the longest ALL-CAPS word group near the top that isn't “PRICE LIST”
   let mfg = "";
-  const capLines = top.split("\n").filter(l =>
-    /^[A-Z0-9 ()&.,/-]{6,}$/.test(l) && !/PRICE\s*LIST/i.test(l)
-  );
+  const capLines = top
+    .split("\n")
+    .filter(
+      (l) => /^[A-Z0-9 ()&.,/-]{6,}$/.test(l) && !/PRICE\s*LIST/i.test(l)
+    );
   if (capLines.length) {
-    mfg = capLines.sort((a,b)=>b.length-a.length)[0];
-    // strip trailing punctuation
+    mfg = capLines.sort((a, b) => b.length - a.length)[0];
     mfg = mfg.replace(/\s*[.,:;-]+$/, "").trim();
   }
 
@@ -81,7 +111,9 @@ function guessMetaFromText(text: string): Partial<Meta> {
   const dateMatch =
     top.match(/\b(20\d{2})[-/.](0[1-9]|1[0-2])[-/.](0[1-9]|[12]\d|3[01])\b/) ||
     top.match(/\b(0[1-9]|[12]\d|3[01])[-/.](0[1-9]|1[0-2])[-/.](20\d{2})\b/) ||
-    top.match(/\b(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\s+20\d{2}\b/i);
+    top.match(
+      /\b(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\s+20\d{2}\b/i
+    );
   if (dateMatch) validity = dateMatch[0];
 
   return {
@@ -128,16 +160,15 @@ const makeRow = (
   };
 };
 
+// ----------- main API -----------
 export async function extractFromPdf(
   file: ArrayBuffer,
   meta: Meta
 ): Promise<PriceRow[]> {
-  // lazy-load to avoid build-time analysis; only load when the route is called
-  const { default: pdfParse } = await import("pdf-parse");
-
   const buf = Buffer.from(file);
-  const parsed = await pdfParse(buf);
-  const text = parsed.text || "";
+
+  // read text from PDF without touching the filesystem
+  const text = await pdfBufferToText(buf);
   const currency = currencyFromText(text);
 
   // Merge user-provided (optional) meta with guesses
@@ -177,12 +208,14 @@ export async function extractFromPdf(
     if (!priceMatches.length) continue;
 
     for (const priceToken of priceMatches) {
-      const model = contextCodes[contextCodes.length - 1] || `ITEM_${rows.length + 1}`;
+      const model =
+        contextCodes[contextCodes.length - 1] || `ITEM_${rows.length + 1}`;
       const desc = contextDesc.slice(-2).join(" ") || "Price Item";
       rows.push(makeRow(mergedMeta, currency, model, desc, priceToken));
     }
   }
 
+  // de-dup model+price
   const seen = new Set<string>();
   const deduped = rows.filter((r) => {
     const key = `${r.ModelCode}|${r.T2List}`;
