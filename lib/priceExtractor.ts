@@ -1,7 +1,14 @@
-// lib/priceExtractor.ts
-import pdfParse from "pdf-parse";
-
 // --- schema your app emits (matches your “3D BULLET RIG” example) ---
+export async function extractFromPdf(
+  file: ArrayBuffer,
+  meta: Meta
+): Promise<PriceRow[]> {
+  const { default: pdfParse } = await import("pdf-parse"); // <-- lazy import
+
+  const buf = Buffer.from(file);
+  const parsed = await pdfParse(buf);
+  const text = parsed.text || "";
+
 export type PriceRow = {
   Supplier: string;
   Manufacturer: string;
