@@ -9,9 +9,8 @@ function getGenAI() {
   return new GoogleGenerativeAI(key);
 }
 
-// You can switch models here if needed:
+// You can override via env if needed
 const MODEL_ID = process.env.GEMINI_SCHEMA_MODEL || "gemini-2.0-flash";
-// For maximum stability, try "gemini-1.5-flash" if you keep seeing formatting issues.
 
 const META_PROMPT = `
 You are a JSON Schema expert. Create a JSON schema based on the user input. The schema will be used to extract data.
@@ -97,18 +96,40 @@ function isPlainObject(x: unknown): x is Record<string, unknown> {
 
 function validateSchemaObject(schema: Record<string, unknown>) {
   // Disallow $schema / $defs / $ref
+  const sc = schema as { [k: string]: unknown };
   for (const bad of ["$schema", "$defs", "$ref"]) {
-    if (bad in schema) {
-      delete (schema as any)[bad];
+    if (Object.prototype.hasOwnProperty.call(sc, bad)) {
+      delete sc[bad];
     }
   }
   // type must be a string if present
-  if ("type" in schema && typeof (schema as any).type !== "string") {
+  if ("type" in sc && typeof sc.type !== "string") {
     throw new Error(`Invalid schema: "type" must be a string`);
   }
 }
 
-async function generateSchemaWithRetry(model: ReturnType<GoogleGenerativeAI["getGenerativeModel"]>, prompt: string) {
+function extractErrorInfo(err: unknown): { status?: number; message?: string } {
+  if (err && typeof err === "object") {
+    const o = err as Record<string, unknown>;
+    return {
+      status: typeof o.status === "number" ? o.status : undefined,
+      message: typeof o.message === "string" ? o.message : undefined,
+    };
+  }
+  return {};
+}
+
+function isRateLimit(err: unknown): boolean {
+  const { status, message } = extractErrorInfo(err);
+  if (status === 429) return true;
+  if (message && /rate limit|quota/i.test(message)) return true;
+  return false;
+}
+
+async function generateSchemaWithRetry(
+  model: ReturnType<GoogleGenerativeAI["getGenerativeModel"]>,
+  prompt: string
+) {
   const maxAttempts = 3;
   let lastErr: unknown;
 
@@ -116,11 +137,9 @@ async function generateSchemaWithRetry(model: ReturnType<GoogleGenerativeAI["get
     try {
       const res = await model.generateContent(prompt);
       return res;
-    } catch (e: any) {
-      lastErr = e;
-      const is429 = e?.status === 429 || /rate limit|quota/i.test(String(e?.message || ""));
-      if (attempt < maxAttempts && is429) {
-        // Exponential backoff
+    } catch (err: unknown) {
+      lastErr = err;
+      if (attempt < maxAttempts && isRateLimit(err)) {
         const ms = 300 * Math.pow(2, attempt - 1);
         await new Promise((r) => setTimeout(r, ms));
         continue;
@@ -143,8 +162,8 @@ export async function POST(request: Request) {
     const model = genAI.getGenerativeModel({
       model: MODEL_ID,
       generationConfig: {
-        temperature: 0, // more deterministic JSON
-        responseMimeType: "application/json", // ask explicitly for JSON
+        temperature: 0, // deterministic JSON
+        responseMimeType: "application/json",
       },
     });
 
@@ -154,17 +173,14 @@ export async function POST(request: Request) {
     const result = await generateSchemaWithRetry(model, merged);
     const response = await result.response;
 
-    let text = sanitizeJsonString(response.text());
+    const text = sanitizeJsonString(response.text());
     let parsed: unknown;
 
     try {
       parsed = JSON.parse(text);
-    } catch (e) {
+    } catch {
       return NextResponse.json(
-        {
-          error: "Model returned non-JSON.",
-          detail: text.slice(0, 2000),
-        },
+        { error: "Model returned non-JSON.", detail: text.slice(0, 2000) },
         { status: 502 }
       );
     }
@@ -180,20 +196,14 @@ export async function POST(request: Request) {
 
     return NextResponse.json({ schema: parsed });
   } catch (error: unknown) {
-    const e = error as { message?: string; name?: string; status?: number; code?: string; stack?: string };
-    console.error("Error generating schema:", e);
-
-    const status =
-      typeof e?.status === "number" && Number.isInteger(e.status) ? e.status : 500;
-
+    const { status, message } = extractErrorInfo(error);
+    console.error("Error generating schema:", error);
     return NextResponse.json(
       {
         error: "Failed to generate schema. This could be a rate limit or output formatting issue.",
-        detail: e?.message,
-        code: e?.code,
-        name: e?.name,
+        detail: message,
       },
-      { status }
+      { status: typeof status === "number" ? status : 500 }
     );
   }
 }
