@@ -116,9 +116,7 @@ export async function POST(request: Request) {
     });
 
     const status =
-      typeof e?.status === "number" && Number.isInteger(e.status)
-        ? e.status
-        : 500;
+      typeof e?.status === "number" && Number.isInteger(e.status) ? e.status : 500;
 
     return NextResponse.json(
       {
@@ -132,3 +130,4 @@ export async function POST(request: Request) {
       { status }
     );
   }
+}
