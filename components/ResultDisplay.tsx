@@ -1,13 +1,12 @@
 // components/ResultDisplay.tsx
 "use client";
 import * as XLSX from "xlsx";
+import type { PriceRow } from "@/lib/priceExtractor";
 
-type Row = Record<string, any>;
-
-export default function ResultDisplay({ rows }: { rows: Row[] }) {
+export default function ResultDisplay({ rows }: { rows: PriceRow[] }) {
   if (!rows?.length) return null;
 
-  const keys = Object.keys(rows[0]);
+  const keys = Object.keys(rows[0]) as (keyof PriceRow)[];
 
   const downloadJSON = () => {
     const blob = new Blob([JSON.stringify(rows, null, 2)], { type: "application/json" });
@@ -44,16 +43,20 @@ export default function ResultDisplay({ rows }: { rows: Row[] }) {
         <table className="min-w-full text-sm">
           <thead className="bg-gray-50 sticky top-0">
             <tr>
-              {keys.map(k => (
-                <th key={k} className="text-left px-3 py-2 whitespace-nowrap">{k}</th>
+              {keys.map((k) => (
+                <th key={String(k)} className="text-left px-3 py-2 whitespace-nowrap">
+                  {String(k)}
+                </th>
               ))}
             </tr>
           </thead>
           <tbody>
             {rows.slice(0, 500).map((r, i) => (
               <tr key={i} className="odd:bg-white even:bg-gray-50">
-                {keys.map(k => (
-                  <td key={k} className="px-3 py-2 whitespace-nowrap">{String(r[k] ?? "")}</td>
+                {keys.map((k) => (
+                  <td key={String(k)} className="px-3 py-2 whitespace-nowrap">
+                    {String(r[k] ?? "")}
+                  </td>
                 ))}
               </tr>
             ))}
@@ -61,7 +64,9 @@ export default function ResultDisplay({ rows }: { rows: Row[] }) {
         </table>
       </div>
 
-      {rows.length > 500 && <p className="text-xs opacity-70">Showing first 500 rows (download to see all).</p>}
+      {rows.length > 500 && (
+        <p className="text-xs opacity-70">Showing first 500 rows (download to see all).</p>
+      )}
     </div>
   );
 }
