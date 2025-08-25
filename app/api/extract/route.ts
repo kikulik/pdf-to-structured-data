@@ -42,43 +42,24 @@ export async function POST(request: Request) {
 
     const prompt = "Extract the structured data from the following PDF file.";
 
-    // Decide inline vs files API
-    const INLINE_LIMIT = 18 * 1024 * 1024; // stay below typical inline caps
-    let result;
-
+    const INLINE_LIMIT = 18 * 1024 * 1024; // ~18MB
+    
     if (file.size <= INLINE_LIMIT) {
       const buffer = Buffer.from(await file.arrayBuffer());
       const base64 = buffer.toString("base64");
-
+    
       result = await model.generateContent([
         { text: prompt },
-        {
-          inlineData: {
-            mimeType: "application/pdf",
-            data: base64,
-          },
-        },
+        { inlineData: { mimeType: "application/pdf", data: base64 } },
       ]);
     } else {
-      // Use Files API for larger PDFs
-      const upload = await genAI.files.upload({
-        file: {
-          data: Buffer.from(await file.arrayBuffer()),
-          mimeType: "application/pdf",
-          name: file.name,
-        },
-        displayName: file.name,
-      });
-
-      result = await model.generateContent([
-        { text: prompt },
+      return NextResponse.json(
         {
-          fileData: {
-            mimeType: upload.file.mimeType!,
-            fileUri: upload.file.uri!,
-          },
+          error:
+            "PDF is too large for inline processing (> ~18MB). Please upload a smaller file or compress the PDF.",
         },
-      ]);
+        { status: 413 }
+      );
     }
 
     const response = await result.response;
