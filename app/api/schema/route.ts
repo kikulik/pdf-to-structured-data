@@ -1,13 +1,14 @@
 import { NextResponse } from "next/server";
 import { GoogleGenerativeAI } from "@google/generative-ai";
 
-function requireEnv(name: string) {
-  const v = process.env[name];
-  if (!v) throw new Error(`Missing required env var: ${name}`);
-  return v;
+export const dynamic = "force-dynamic";
+
+function getGenAI() {
+  const key = process.env.GEMINI_API_KEY;
+  if (!key) throw new Error("Missing required env var: GEMINI_API_KEY");
+  return new GoogleGenerativeAI(key);
 }
 
-const genAI = new GoogleGenerativeAI(requireEnv("GEMINI_API_KEY"));
 const MODEL_ID = "gemini-2.0-flash";
 
 const META_PROMPT = `
@@ -74,6 +75,8 @@ User input: {USER_PROMPT}
 
 export async function POST(request: Request) {
   try {
+    const genAI = getGenAI();
+
     const { prompt } = await request.json();
     const model = genAI.getGenerativeModel({ model: MODEL_ID });
 
@@ -82,7 +85,6 @@ export async function POST(request: Request) {
     );
 
     const response = await result.response;
-    // Parse the text; defensively strip code fences if the model ignored instructions
     let text = response.text().trim();
     if (text.startsWith("```")) {
       text = text.replace(/^```(?:json)?\s*/i, "").replace(/```$/, "").trim();
