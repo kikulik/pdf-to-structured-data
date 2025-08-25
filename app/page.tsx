@@ -1,4 +1,5 @@
 "use client";
+
 import { useState } from "react";
 import { FileUpload } from "@/components/FileUpload";
 import { PromptInput } from "@/components/PromptInput";
@@ -7,9 +8,10 @@ import { FileIcon, FileText } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 
 export default function Home() {
-  const [schema, setSchema] = useState<string | null>(null);
+  // Use broad types here to avoid fighting JSON shapes coming back from the API
+  const [schema, setSchema] = useState<any>(null);
   const [file, setFile] = useState<File | null>(null);
-  const [result, setResult] = useState<string | null>(null);
+  const [result, setResult] = useState<any>(null);
   const [loading, setLoading] = useState(false);
 
   const handleFileSelect = (selectedFile: File) => {
@@ -17,33 +19,56 @@ export default function Home() {
   };
 
   const handlePromptSubmit = async (prompt: string) => {
+    if (!file) {
+      alert("Please upload a PDF before extracting.");
+      return;
+    }
+
     try {
       setLoading(true);
-      // First, get the JSON schema
+      setResult(null);
+
+      // 1) Get the JSON schema
       const schemaResponse = await fetch("/api/schema", {
         method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
+        headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ prompt }),
       });
 
-      const { schema } = await schemaResponse.json();
+      if (!schemaResponse.ok) {
+        const err = await safeJson(schemaResponse);
+        const msg = (err?.error || "Failed to generate schema.") + (err?.detail ? `\n${err.detail}` : "");
+        throw new Error(msg);
+      }
 
-      setSchema(schema);
-      // Then, process the PDF with the schema
+      const schemaPayload = await schemaResponse.json();
+      setSchema(schemaPayload?.schema);
+
+      // 2) Process the PDF with the schema
       const formData = new FormData();
-      formData.append("file", file!);
-      formData.append("schema", JSON.stringify(schema));
+      formData.append("file", file);
+      formData.append("schema", JSON.stringify(schemaPayload?.schema));
 
       const extractResponse = await fetch("/api/extract", {
         method: "POST",
         body: formData,
       });
 
+      if (!extractResponse.ok) {
+        const err = await safeJson(extractResponse);
+        const msg =
+          (err?.error || "Failed to extract data.") +
+          (err?.detail ? `\n${err.detail}` : "") +
+          (err?.code ? `\nCode: ${err.code}` : "") +
+          (err?.name ? `\nName: ${err.name}` : "");
+        throw new Error(msg);
+      }
+
       const data = await extractResponse.json();
       setResult(data);
-    } catch (error) {
+    } catch (error: unknown) {
+      const e = error as { message?: string };
+      alert(e?.message || "Unexpected error.");
       console.error("Error processing request:", error);
     } finally {
       setLoading(false);
@@ -69,6 +94,7 @@ export default function Home() {
             powered by Google DeepMind Gemini 2.0 Flash
           </span>
         </CardHeader>
+
         <CardContent className="space-y-6 pt-6 w-full">
           {!result && !loading ? (
             <>
@@ -87,6 +113,7 @@ export default function Home() {
             </div>
           ) : (
             <ResultDisplay
+              // ResultDisplay stringifies whatever it receives, so passing objects is fine
               result={result || ""}
               schema={schema || ""}
               onReset={handleReset}
@@ -96,4 +123,16 @@ export default function Home() {
       </Card>
     </main>
   );
+}
+
+/**
+ * Safely read a JSON error payload. If it isn't JSON, return an object with a generic message.
+ */
+async function safeJson(res: Response): Promise<any> {
+  try {
+    return await res.json();
+  } catch {
+    const text = await res.text().catch(() => "");
+    return { error: text || `HTTP ${res.status}` };
+  }
 }
