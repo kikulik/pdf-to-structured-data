@@ -5,15 +5,26 @@ import { FileUpload } from "@/components/FileUpload";
 import MetaForm from "@/components/MetaForm";
 import ResultDisplay from "@/components/ResultDisplay";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import type { PriceRow } from "@/lib/priceExtractor";
+
+type Meta = {
+  supplier: string;
+  manufacturer: string;
+  validityDate: string; // ISO 8601
+};
+
+type ItemsPayload = {
+  items?: PriceRow[] | Record<string, PriceRow>;
+};
 
 export default function Home() {
   const [file, setFile] = useState<File | null>(null);
-  const [meta, setMeta] = useState({
+  const [meta, setMeta] = useState<Meta>({
     supplier: "UAB TVC Solutions",
     manufacturer: "Unknown",
     validityDate: "2154-12-31T00:00:00",
   });
-  const [rows, setRows] = useState<any[]>([]);
+  const [rows, setRows] = useState<PriceRow[]>([]);
   const [loading, setLoading] = useState(false);
 
   const handleFileSelect = (selectedFile: File) => {
@@ -26,6 +37,7 @@ export default function Home() {
       alert("Please upload a PDF before extracting.");
       return;
     }
+
     const fd = new FormData();
     fd.append("file", file);
     fd.append("supplier", meta.supplier);
@@ -34,26 +46,32 @@ export default function Home() {
 
     try {
       setLoading(true);
-      const res = await fetch("/api/parse", {
-        method: "POST",
-        body: fd,
-      });
+
+      const res = await fetch("/api/parse", { method: "POST", body: fd });
       if (!res.ok) {
-        const errText = await res.text();
+        const errText = await res.text().catch(() => "");
         throw new Error(errText || "Failed to parse PDF.");
       }
-      const data = await res.json();
-      if (data && Array.isArray(data.items)) {
-        setRows(data.items);
-      } else if (data && data.items) {
-        // if items is an object, convert to array
-        setRows(Object.values(data.items));
+
+      const data: unknown = await res.json();
+      const payload = data as ItemsPayload;
+
+      if (payload.items) {
+        if (Array.isArray(payload.items)) {
+          setRows(payload.items);
+        } else {
+          setRows(Object.values(payload.items));
+        }
       } else {
         setRows([]);
       }
-    } catch (err: any) {
+    } catch (err: unknown) {
       console.error(err);
-      alert(err?.message ?? "Unexpected error while extracting data.");
+      const msg =
+        err instanceof Error
+          ? err.message
+          : "Unexpected error while extracting data.";
+      alert(msg);
     } finally {
       setLoading(false);
     }
@@ -67,12 +85,14 @@ export default function Home() {
             PDF to Structured Data
           </CardTitle>
           <span className="text-sm font-mono text-muted-foreground">
-            Vendor‑agnostic PDF price parser
+            Vendor-agnostic PDF price parser
           </span>
         </CardHeader>
+
         <CardContent className="space-y-6 pt-6 w-full">
           <FileUpload onFileSelect={handleFileSelect} />
           <MetaForm onChange={setMeta} />
+
           <button
             className="border px-4 py-2 rounded bg-primary text-primary-foreground disabled:opacity-50"
             onClick={handleExtract}
@@ -80,6 +100,7 @@ export default function Home() {
           >
             {loading ? "Processing..." : "Extract Data"}
           </button>
+
           {rows.length > 0 && <ResultDisplay rows={rows} />}
         </CardContent>
       </Card>
