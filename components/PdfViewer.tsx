@@ -14,14 +14,15 @@ import {
   SheetTrigger,
 } from "./ui/sheet";
 
-// ✅ Load the pdf.js worker via Turbopack/webpack worker URL
-//    This avoids alias hacks and works in Next 15.
-import workerSrc from "pdfjs-dist/build/pdf.worker.min.mjs?worker&url";
-pdfjs.GlobalWorkerOptions.workerSrc = workerSrc;
+// ✅ Webpack-friendly worker URL. Next will bundle this asset and give a final URL.
+pdfjs.GlobalWorkerOptions.workerSrc = new URL(
+  "pdfjs-dist/build/pdf.worker.min.js",
+  import.meta.url
+).toString();
 
-// Remove external CMaps/standard fonts to avoid 404s.
-// If you *really* need them, add those folders under /public and set URLs back.
+// Keep options minimal to avoid fetching non-existent assets
 const options = {
+  // If you later copy assets to /public, you can re-enable these:
   // cMapUrl: "/cmaps/",
   // standardFontDataUrl: "/standard_fonts/",
 };
@@ -39,7 +40,7 @@ export default function PdfViewer({ file }: { file: File }) {
 
   useResizeObserver(containerRef, {}, onResize);
 
-  function onDocumentLoadSuccess({ numPages }: { numPages: number }): void {
+  function onDocumentLoadSuccess({ numPages }: { numPages: number }) {
     setErrMsg(null);
     setNumPages(numPages);
   }
