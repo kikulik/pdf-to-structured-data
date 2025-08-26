@@ -1,3 +1,4 @@
+// app/api/extract/route.ts
 import { NextResponse } from "next/server";
 import {
   GoogleGenerativeAI,
@@ -21,14 +22,10 @@ const MODEL_ID = process.env.GEMINI_MODEL ?? "gemini-2.0-flash";
 
 function normalizeUnicode(s: string): string {
   return s
-    // curly double quotes → "
-    .replace(/[\u201C\u201D\u2033]/g, '"')
-    // curly single quotes → '
-    .replace(/[\u2018\u2019\u2032]/g, "'")
-    // exotic spaces, BOM → space
-    .replace(/[\u00A0\u2000-\u200D\u202F\u205F\u3000\uFEFF]/g, " ")
-    // line/paragraph separators → newline
-    .replace(/[\u2028\u2029]/g, "\n");
+    .replace(/[\u201C\u201D\u2033]/g, '"')    // curly double quotes → "
+    .replace(/[\u2018\u2019\u2032]/g, "'")    // curly single quotes → '
+    .replace(/[\u00A0\u2000-\u200D\u202F\u205F\u3000\uFEFF]/g, " ") // weird spaces/BOM → space
+    .replace(/[\u2028\u2029]/g, "\n");        // line/paragraph sep → \n
 }
 
 function escapeControlCharsInStrings(s: string): string {
@@ -62,15 +59,15 @@ function quoteUnquotedKeys(s: string): string {
 function singleToDoubleQuotedStrings(s: string): string {
   // '...'(with escapes) → "..."
   return s.replace(/'((?:[^'\\]|\\.)*)'/g, (_m, inner) => {
-    const unescaped = String(inner).replace(/"/g, '\\"');
-    return `"${unescaped}"`;
+    const withEscapedDquotes = String(inner).replace(/"/g, '\\"');
+    return `"${withEscapedDquotes}"`;
   });
 }
 
 function sanitizeJsonString(text: string): string {
   let s = (text ?? "").trim();
 
-  // strip code fences
+  // strip ``` fences
   if (s.startsWith("```")) {
     s = s.replace(/^```(?:json)?\s*/i, "").replace(/```$/, "").trim();
   }
@@ -87,9 +84,6 @@ function sanitizeJsonString(text: string): string {
   // trailing commas
   s = s.replace(/,\s*([}\]])/g, "$1");
 
-  // bare items: [...]
-  if (!s.startsWith("{") && /^\s*items\s*:\s*\[/.test(s)) s = `{${s}}`;
-
   // Python / JS-ish literals → JSON
   s = s
     .replace(/\bTrue\b/g, "true")
@@ -99,13 +93,14 @@ function sanitizeJsonString(text: string): string {
     .replace(/\bInfinity\b/g, "null")
     .replace(/\b-Infinity\b/g, "null");
 
-  // quote unquoted keys before converting quotes
-  s = quoteUnquotedKeys(s);
+  // bare items: [...] → wrap
+  if (!s.startsWith("{") && /^\s*items\s*:\s*\[/.test(s)) s = `{${s}}`;
 
-  // convert single-quoted strings
+  // quote unquoted keys, then convert single quotes
+  s = quoteUnquotedKeys(s);
   s = singleToDoubleQuotedStrings(s);
 
-  // escape control chars/newlines inside strings
+  // escape control chars/newlines in strings
   s = escapeControlCharsInStrings(s);
 
   return s;
@@ -133,36 +128,47 @@ function extractLikelyItemsArray(raw: string): string | null {
   return null;
 }
 
-function tryParseJSON(raw: string): unknown | undefined {
-  const clean = sanitizeJsonString(raw);
+function parseWithDebug(raw: string) {
+  const tried: string[] = [];
+  const cleaned = sanitizeJsonString(raw);
 
   // 1) direct
-  try { return JSON.parse(clean); } catch {}
+  tried.push("direct");
+  try { return { value: JSON.parse(cleaned), debug: { cleaned, tried, stage: "direct" } }; } catch {}
 
-  // 2) salvage first {...}
-  const so = clean.indexOf("{"), eo = clean.lastIndexOf("}");
-  if (so !== -1 && eo > so) {
-    const slice = clean.slice(so, eo + 1);
-    try { return JSON.parse(slice); } catch {}
+  // 2) first {...}
+  tried.push("first-object-slice");
+  {
+    const so = cleaned.indexOf("{"), eo = cleaned.lastIndexOf("}");
+    if (so !== -1 && eo > so) {
+      const slice = cleaned.slice(so, eo + 1);
+      try { return { value: JSON.parse(slice), debug: { cleaned, tried, stage: "first-object-slice" } }; } catch {}
+    }
   }
 
-  // 3) salvage first [...]
-  const sa = clean.indexOf("["), ea = clean.lastIndexOf("]");
-  if (sa !== -1 && ea > sa) {
-    const slice = clean.slice(sa, ea + 1);
-    try { return JSON.parse(slice); } catch {}
+  // 3) first [...]
+  tried.push("first-array-slice");
+  {
+    const sa = cleaned.indexOf("["), ea = cleaned.lastIndexOf("]");
+    if (sa !== -1 && ea > sa) {
+      const slice = cleaned.slice(sa, ea + 1);
+      try { return { value: JSON.parse(slice), debug: { cleaned, tried, stage: "first-array-slice" } }; } catch {}
+    }
   }
 
   // 4) bracket-aware items array → wrap as { items: [...] }
-  const items = extractLikelyItemsArray(clean);
-  if (items) {
-    try {
-      const arr = JSON.parse(items);
-      return { items: arr };
-    } catch {}
+  tried.push("items-array-wrap");
+  {
+    const items = extractLikelyItemsArray(cleaned);
+    if (items) {
+      try {
+        const arr = JSON.parse(items);
+        return { value: { items: arr }, debug: { cleaned, tried, stage: "items-array-wrap" } };
+      } catch {}
+    }
   }
 
-  return undefined;
+  return { value: undefined, debug: { cleaned, tried, stage: "failed" as const } };
 }
 
 function isPlainObject(x: unknown): x is Record<string, unknown> {
@@ -174,6 +180,9 @@ function isPlainObject(x: unknown): x is Record<string, unknown> {
 export async function POST(request: Request) {
   try {
     const genAI = getGenAI();
+
+    const url = new URL(request.url);
+    const DEBUG = url.searchParams.get("debug") === "1" || process.env.DEBUG_EXTRACT === "1";
 
     const formData = await request.formData();
     const file = formData.get("file") as File | null;
@@ -231,19 +240,33 @@ export async function POST(request: Request) {
     const response = await result.response;
     const raw = response.text();
 
-    const parsed = tryParseJSON(raw);
-    if (parsed === undefined) {
-      console.error("Model returned non-JSON (first 2k):", raw.slice(0, 2000));
+    const { value, debug } = parseWithDebug(raw);
+
+    if (value === undefined) {
+      const headers = new Headers();
+      headers.set("x-extract-debug-stage", debug.stage);
       return NextResponse.json(
-        { error: "Model returned non-JSON.", detail: raw.slice(0, 2000) },
-        { status: 502 }
+        {
+          error: "Model returned non-JSON.",
+          detail: raw.slice(0, 2000),
+          ...(DEBUG && {
+            debug: {
+              cleanedFirst2k: debug.cleaned.slice(0, 2000),
+              stagesTried: debug.tried,
+              stage: debug.stage,
+            },
+          }),
+        },
+        { status: 502, headers }
       );
     }
 
-    return NextResponse.json(parsed);
+    // success
+    const headers = new Headers();
+    headers.set("x-extract-debug-stage", debug.stage);
+    return NextResponse.json(value, { headers });
   } catch (err: unknown) {
     const e = err as { message?: string; name?: string; status?: number; code?: string };
-
     let status = typeof e?.status === "number" ? e.status : 500;
     const msg = (e?.message || "").toLowerCase();
     if (status === 500) {
@@ -253,7 +276,6 @@ export async function POST(request: Request) {
       else if (msg.includes("rate limit") || msg.includes("quota")) status = 429;
       else if (msg.includes("too large") || msg.includes("content length") || msg.includes("payload too large")) status = 413;
     }
-
     return NextResponse.json(
       { error: "Extraction failed.", detail: e?.message ?? "Unknown error", code: e?.code ?? undefined, name: e?.name ?? undefined },
       { status }
