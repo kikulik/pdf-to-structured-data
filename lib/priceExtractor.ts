@@ -1,5 +1,13 @@
 // lib/priceExtractor.ts
 import { Buffer } from "node:buffer";
+import pdfParse from "@/lib/pdfParseCJS";
+
+const buf = Buffer.from(u8);
+const parsed = await pdfParse(buf, {
+  // optional: line up with your installed pdfjs-dist
+  version: "v3.11.174",
+});
+const text = parsed.text || "";
 
 // --- output row schema (matches your target structure) ---
 export type PriceRow = {
