@@ -11,8 +11,8 @@ const openSans = Open_Sans({
 });
 
 export const metadata: Metadata = {
-  title: "PDF Extractor",
-  description: "Extract data from PDFs using Google DeepMind Gemini 2.0",
+  title: "PDF to Data",
+  description: "AI powered Extractor",
 };
 
 export const viewport: Viewport = {
