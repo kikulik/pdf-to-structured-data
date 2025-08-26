@@ -15,29 +15,19 @@ export type PdfParseResult = {
 
 type PdfParseOptions = {
   max?: number;
-  version?: string;
+  // NOTE: we intentionally do NOT set "version" here to avoid bad paths like
+  // "./legacy/build/pdf.js" or "./v3.11.174/build/pdf.js".
 };
 
 type PdfParseFn = (data: Buffer, opts?: PdfParseOptions) => Promise<PdfParseResult>;
 
-// Import pdf-parse's internal library file (bypasses index.js debug path)
+// Import pdf-parse's internal library file (skips the buggy index.js)
 const base: PdfParseFn = require("pdf-parse/lib/pdf-parse.js");
 
 /**
- * Pick a pdfjs-dist build folder that actually exists.
- * - Prefer 'legacy/build/pdf.js' if available (present in many versions).
- * - Otherwise let pdf-parse use its default 'build/pdf.js'.
+ * Call pdf-parse without a version override so it resolves to
+ * 'pdfjs-dist/build/pdf.js' by default. This avoids "Cannot find module './legacy/build/pdf.js'".
  */
-function pickVersion(): PdfParseOptions | undefined {
-  try {
-    require.resolve("pdfjs-dist/legacy/build/pdf.js");
-    return { version: "legacy" };
-  } catch {
-    return undefined; // default path: pdfjs-dist/build/pdf.js
-  }
-}
-
 export default function pdfParse(buf: Buffer): Promise<PdfParseResult> {
-  const opts = pickVersion();
-  return base(buf, opts);
+  return base(buf); // no version passed
 }
