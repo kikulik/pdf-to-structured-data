@@ -42,7 +42,7 @@ type PDFJSModule = {
     options:
       | string
       | {
-          data?: Buffer | Uint8Array | ArrayBuffer;
+          data?: Uint8Array | ArrayBuffer;
           disableWorker?: boolean;
           isEvalSupported?: boolean;
         }
@@ -63,7 +63,10 @@ type PDFDocumentProxy = {
 };
 
 // ----------- PDF TEXT (server) via pdfjs-dist (no workers, no fs) -----------
-async function pdfBufferToText(buf: Buffer): Promise<string> {
+async function pdfBufferToText(data: ArrayBuffer | Uint8Array): Promise<string> {
+  // Always hand pdf.js a Uint8Array
+  const u8 = data instanceof Uint8Array ? data : new Uint8Array(data);
+
   // Import the package root (stable across versions)
   const pdfjsMod: unknown = await import("pdfjs-dist");
   const pdfjs = pdfjsMod as PDFJSModule;
@@ -74,7 +77,7 @@ async function pdfBufferToText(buf: Buffer): Promise<string> {
   }
 
   const loadingTask = pdfjs.getDocument({
-    data: buf,
+    data: u8,
     disableWorker: true,
     isEvalSupported: false,
   });
@@ -197,10 +200,11 @@ export async function extractFromPdf(
   file: ArrayBuffer,
   meta: Meta
 ): Promise<PriceRow[]> {
-  const buf = Buffer.from(file);
+  // ✅ Use Uint8Array, not Buffer
+  const u8 = new Uint8Array(file);
 
   // read text from PDF without touching the filesystem
-  const text = await pdfBufferToText(buf);
+  const text = await pdfBufferToText(u8);
   const currency = currencyFromText(text);
 
   // Merge user-provided (optional) meta with guesses
