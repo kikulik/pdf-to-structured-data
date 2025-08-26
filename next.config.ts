@@ -6,9 +6,8 @@ const nextConfig: NextConfig = {
   webpack: (config) => {
     config.resolve.alias = {
       ...(config.resolve.alias || {}),
-      // keep native-canvas out of client bundles
       canvas: path.resolve(__dirname, "./empty-module.ts"),
-      // ⛔ REMOVE any pdfjs worker alias you added earlier
+      // no pdfjs-dist aliases needed
     };
     return config;
   },
