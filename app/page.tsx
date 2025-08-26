@@ -8,6 +8,8 @@ import InlinePdfPreview from "@/components/InlinePdfPreview";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import type { PriceRow } from "@/lib/priceExtractor";
 
+/* ---------------- types & helpers ---------------- */
+
 type Meta = {
   supplier: string;
   manufacturer: string;
@@ -17,6 +19,68 @@ type Meta = {
 type ItemsPayload = {
   items?: PriceRow[] | Record<string, PriceRow>;
 };
+
+type AIResponse = {
+  items?: unknown;
+} | unknown;
+
+// tiny runtime helpers to keep TS strict & eslint happy
+const toStr = (v: unknown) => (v == null ? "" : String(v));
+const toNum = (v: unknown) => {
+  if (typeof v === "number") return Number.isFinite(v) ? v : 0;
+  const n = Number.parseFloat(String(v ?? ""));
+  return Number.isFinite(n) ? n : 0;
+};
+const toISO3 = (v: unknown): "EUR" | "USD" | "GBP" => {
+  const s = String(v ?? "").toUpperCase();
+  return s === "USD" || s === "GBP" ? (s as any) : "EUR";
+};
+
+// JSON Schema for AI route (inlined so this file is self-contained)
+function buildPriceRowSchema() {
+  return {
+    type: "object",
+    properties: {
+      items: {
+        type: "array",
+        description: "Extract product rows from the PDF.",
+        items: {
+          type: "object",
+          properties: {
+            Supplier: { type: "string", description: "Company selling the goods (distributor/dealer/integrator)." },
+            Manufacturer: { type: "string", description: "Company that makes the product." },
+            ModelCode: { type: "string", description: "Vendor SKU / model identifier, letters+digits as shown in the doc." },
+            ModelDescription: { type: "string", description: "Human description of the model row." },
+            T1List: { type: "number", description: "List/MSRP price if present; else 0." },
+            T1Cost: { type: "number", description: "Cost at T1 if present; else 0." },
+            T2List: { type: "number", description: "Dealer/Net price if present; else 0." },
+            T2Cost: { type: "number", description: "Cost at T2 if present; else 0." },
+            ISOCurrency: { type: "string", description: "ISO currency code like EUR, USD, GBP." },
+            ValidityDate: { type: "string", description: "Validity or issue date (ISO if possible) or empty." },
+            T1orT2: { type: "string", description: "Best label for the extracted price (T1 or T2)." },
+            MaterialID: { type: "string" },
+            SAPNumber: { type: "string" },
+            ModelDescriptionEnglish: { type: "string" },
+            ModelDescriptionLanguage2: { type: "string" },
+            ModelDescriptionLanguage3: { type: "string" },
+            ModelDescriptionLanguage4: { type: "string" },
+            QuoteOrPriceList: { type: "string" },
+            WeightKg: { type: "number" },
+            HeightMm: { type: "number" },
+            LengthMm: { type: "number" },
+            WidthMm: { type: "number" },
+            PowerWatts: { type: "number" },
+            FileName: { type: "string" }
+          },
+          required: ["ModelCode", "ModelDescription"]
+        }
+      }
+    },
+    required: ["items"]
+  };
+}
+
+/* ---------------- page ---------------- */
 
 export default function Home() {
   const [file, setFile] = useState<File | null>(null);
@@ -33,7 +97,8 @@ export default function Home() {
     setRows([]);
   };
 
-  const handleExtract = async () => {
+  // Fast regex-based extractor (your /api/parse)
+  const handleExtractFast = async () => {
     if (!file) {
       alert("Please upload a PDF before extracting.");
       return;
@@ -82,6 +147,95 @@ export default function Home() {
     }
   };
 
+  // AI extraction using your /api/extract (Gemini + JSON schema)
+  const handleExtractAI = async () => {
+    if (!file) {
+      alert("Please upload a PDF before extracting.");
+      return;
+    }
+
+    try {
+      setLoading(true);
+      const schema = buildPriceRowSchema();
+      const fd = new FormData();
+      fd.append("file", file);
+      fd.append("schema", JSON.stringify(schema));
+
+      const res = await fetch("/api/extract", { method: "POST", body: fd });
+      if (!res.ok) {
+        const j = await res.json().catch(() => ({}));
+        throw new Error(j?.detail || j?.error || "AI extraction failed.");
+      }
+
+      const data: AIResponse = await res.json();
+
+      // Accept either { items: [...] } or a bare array
+      const itemsAny =
+        (data && typeof data === "object" && "items" in (data as any)
+          ? (data as any).items
+          : data) ?? [];
+
+      const items = Array.isArray(itemsAny) ? itemsAny : [];
+
+      const normalized: PriceRow[] = items.map((rUnknown) => {
+        const r = rUnknown as Record<string, unknown>;
+
+        const currency = toISO3(r.ISOCurrency);
+        const modelDesc = toStr(
+          r.ModelDescription ?? r.Description ?? r["Description EN"]
+        );
+
+        const modelCode = toStr(r.ModelCode);
+        const tier = (toStr(r.T1orT2) === "T1" ? "T1" : (toStr(r.T1orT2) === "T2" ? "T2" : (toNum(r.T2List) ? "T2" : "T1"))) as "T1" | "T2";
+
+        const base: PriceRow = {
+          Supplier: toStr(r.Supplier) || meta.supplier || "",
+          Manufacturer: toStr(r.Manufacturer) || meta.manufacturer || "",
+          ModelCode: modelCode,
+          ModelDescription: modelDesc || modelCode || "",
+          T1List: toNum(r.T1List),
+          T1Cost: toNum(r.T1Cost),
+          T2List: toNum(r.T2List),
+          T2Cost: toNum(r.T2Cost),
+          ISOCurrency: currency,
+          ValidityDate: toStr(r.ValidityDate) || meta.validityDate || "",
+          T1orT2: tier,
+          MaterialID: toStr(r.MaterialID) || modelCode,
+          SAPNumber: toStr(r.SAPNumber) || modelCode,
+          ModelDescriptionEnglish: toStr(r.ModelDescriptionEnglish) || modelDesc,
+          ModelDescriptionLanguage2: toStr(r.ModelDescriptionLanguage2),
+          ModelDescriptionLanguage3: toStr(r.ModelDescriptionLanguage3),
+          ModelDescriptionLanguage4: toStr(r.ModelDescriptionLanguage4),
+          QuoteOrPriceList: toStr(r.QuoteOrPriceList) || "Price List",
+          WeightKg: toNum(r.WeightKg),
+          HeightMm: toNum(r.HeightMm),
+          LengthMm: toNum(r.LengthMm),
+          WidthMm: toNum(r.WidthMm),
+          PowerWatts: toNum(r.PowerWatts),
+          FileName: toStr(r.FileName) || file.name,
+        };
+
+        // If model gave only one of T1/T2 prices, mirror into the selected tier for convenience
+        if (tier === "T1" && base.T1List === 0 && base.T2List > 0) {
+          base.T1List = base.T2List;
+          base.T1Cost = base.T2Cost;
+        } else if (tier === "T2" && base.T2List === 0 && base.T1List > 0) {
+          base.T2List = base.T1List;
+          base.T2Cost = base.T1Cost;
+        }
+
+        return base;
+      });
+
+      setRows(normalized);
+    } catch (e: unknown) {
+      console.error(e);
+      alert(e instanceof Error ? e.message : "AI extraction failed.");
+    } finally {
+      setLoading(false);
+    }
+  };
+
   return (
     <main className="min-h-screen p-6">
       {/* Wide workspace container */}
@@ -99,13 +253,23 @@ export default function Home() {
             <FileUpload onFileSelect={handleFileSelect} />
             <MetaForm onChange={setMeta} />
 
-            <div className="flex gap-3">
+            <div className="flex flex-wrap gap-3">
               <button
                 className="border px-4 py-2 rounded bg-primary text-primary-foreground disabled:opacity-50"
-                onClick={handleExtract}
+                onClick={handleExtractFast}
                 disabled={!file || loading}
+                title="Fast heuristic parser (no AI)."
               >
-                {loading ? "Processing..." : "Extract Data"}
+                {loading ? "Processing..." : "Extract Data (fast)"}
+              </button>
+
+              <button
+                className="border px-4 py-2 rounded bg-foreground text-background disabled:opacity-50"
+                onClick={handleExtractAI}
+                disabled={!file || loading}
+                title="Use Gemini with a JSON Schema to reason about Supplier/Manufacturer/ModelCode."
+              >
+                {loading ? "Thinking…" : "Smart Extract (AI)"}
               </button>
             </div>
           </CardContent>
@@ -117,7 +281,7 @@ export default function Home() {
             <CardTitle className="text-lg">Preview & Results</CardTitle>
           </CardHeader>
           <CardContent className="space-y-4">
-            {/* Preview panel takes height and scrolls */}
+            {/* Preview panel fills height and scrolls */}
             <div className="h-[58vh] min-h-[360px] w-full overflow-auto rounded border">
               {file ? (
                 <InlinePdfPreview file={file} />
@@ -128,7 +292,7 @@ export default function Home() {
               )}
             </div>
 
-            {/* Results table fills the rest */}
+            {/* Results table */}
             {rows.length > 0 && <ResultDisplay rows={rows} />}
           </CardContent>
         </Card>
