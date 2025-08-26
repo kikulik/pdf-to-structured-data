@@ -23,12 +23,28 @@ pdfjs.GlobalWorkerOptions.workerSrc = new URL(
 // Keep options minimal (no external CMaps/fonts fetches)
 const options = {};
 
+// --- Minimal pdf.js types for the fallback path (no `any`) ---
+type PDFPageViewport = { width: number; height: number };
+type PDFPageProxy = {
+  getViewport: (o: { scale: number }) => PDFPageViewport;
+  render: (o: { canvasContext: CanvasRenderingContext2D; viewport: PDFPageViewport }) => {
+    promise: Promise<void>;
+  };
+};
+type PDFDocProxy = {
+  numPages: number;
+  getPage: (n: number) => Promise<PDFPageProxy>;
+};
+type GetDocumentReturn = { promise: Promise<PDFDocProxy> };
+type GetDocumentFn = (src: { data: Uint8Array }) => GetDocumentReturn;
+
 export default function PdfViewer({ file }: { file: File }) {
   const [bytes, setBytes] = useState<Uint8Array | null>(null);
   const [numPages, setNumPages] = useState<number>();
   const [useFallback, setUseFallback] = useState(false);
   const [errMsg, setErrMsg] = useState<string | null>(null);
 
+  const [containerRef, setContainerRef] = useState<HTMLElement | null>(null);
   const [containerWidth, setContainerWidth] = useState<number>();
   const [isReading, setIsReading] = useState<boolean>(false);
 
@@ -58,7 +74,6 @@ export default function PdfViewer({ file }: { file: File }) {
   }, [file]);
 
   // Track width for Page sizing
-  const [containerRef, setContainerRef] = useState<HTMLElement | null>(null);
   const onResize = useCallback<ResizeObserverCallback>((entries) => {
     const [entry] = entries;
     if (entry) setContainerWidth(entry.contentRect.width);
@@ -79,44 +94,35 @@ export default function PdfViewer({ file }: { file: File }) {
 
   // --- Fallback renderer using pdfjs-dist directly (canvas) ---
   useEffect(() => {
-    if (!useFallback || !bytes || !canvasWrapRef.current) return;
+    if (!useFallback || !bytes) return;
 
-    const container = canvasWrapRef.current;
+    const wrap = canvasWrapRef.current; // capture ref to satisfy hooks rule
+    if (!wrap) return;
+
     let cancelled = false;
 
     (async () => {
       try {
-        // Dynamic import of the ESM build
-        const pdfMod = await import("pdfjs-dist/build/pdf.mjs");
-        // Configure worker for this path as well
-        (pdfMod as unknown as { GlobalWorkerOptions: { workerSrc: string } })
-          .GlobalWorkerOptions.workerSrc = new URL(
+        const pdfMod = (await import("pdfjs-dist/build/pdf.mjs")) as unknown as {
+          GlobalWorkerOptions: { workerSrc: string };
+          getDocument: GetDocumentFn;
+        };
+
+        // worker for fallback path as well
+        pdfMod.GlobalWorkerOptions.workerSrc = new URL(
           "pdfjs-dist/build/pdf.worker.min.js",
           import.meta.url
         ).toString();
 
-        const getDocument = (pdfMod as unknown as {
-          getDocument: (src: { data: Uint8Array }) => {
-            promise: Promise<{
-              numPages: number;
-              getPage: (n: number) => Promise<{
-                getViewport: (o: { scale: number }) => { width: number; height: number; };
-                render: (o: { canvasContext: CanvasRenderingContext2D; viewport: any }) => { promise: Promise<void> };
-              }>;
-            }>;
-          };
-        }).getDocument;
-
-        const task = getDocument({ data: bytes });
+        const task = pdfMod.getDocument({ data: bytes });
         const pdf = await task.promise;
-
         if (cancelled) return;
 
         setNumPages(pdf.numPages);
-        container.innerHTML = "";
+        wrap.innerHTML = "";
 
         // Scale canvas to container width if possible
-        const targetWidth = containerRef?.clientWidth || 800;
+        const targetWidth = (containerRef?.clientWidth ?? 800);
         for (let i = 1; i <= pdf.numPages; i++) {
           const page = await pdf.getPage(i);
           const viewport0 = page.getViewport({ scale: 1.0 });
@@ -132,7 +138,7 @@ export default function PdfViewer({ file }: { file: File }) {
           const ctx = canvas.getContext("2d");
           if (ctx) {
             await page.render({ canvasContext: ctx, viewport }).promise;
-            container.appendChild(canvas);
+            if (!cancelled) wrap.appendChild(canvas);
           }
         }
 
@@ -145,10 +151,10 @@ export default function PdfViewer({ file }: { file: File }) {
 
     return () => {
       cancelled = true;
-      if (canvasWrapRef.current) canvasWrapRef.current.innerHTML = "";
+      // cleanup using captured variable (not the ref directly)
+      wrap.innerHTML = "";
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [useFallback, bytes]);
+  }, [useFallback, bytes, containerRef]);
 
   return (
     <Sheet>
@@ -193,10 +199,9 @@ export default function PdfViewer({ file }: { file: File }) {
           )}
 
           {/* If react-pdf fails, draw with raw pdf.js */}
-          {useFallback && (
-            <div ref={canvasWrapRef}>
-              {errMsg && <p className="text-sm text-red-500 mt-2">{errMsg}</p>}
-            </div>
+          <div ref={canvasWrapRef} />
+          {useFallback && errMsg && (
+            <p className="text-sm text-red-500 mt-2">{errMsg}</p>
           )}
         </div>
       </SheetContent>
