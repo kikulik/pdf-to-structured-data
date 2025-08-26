@@ -1,4 +1,3 @@
-// app/api/extract/route.ts
 import { NextResponse } from "next/server";
 import {
   GoogleGenerativeAI,
@@ -16,8 +15,38 @@ function getGenAI() {
   return new GoogleGenerativeAI(key);
 }
 
-// Allow overriding via env if you want to switch models without redeploying
 const MODEL_ID = process.env.GEMINI_MODEL ?? "gemini-2.0-flash";
+
+/** Escape raw \n/\r that appear *inside* quoted strings (illegal in JSON). */
+function escapeNewlinesInQuotedStrings(s: string): string {
+  let out = "";
+  let inStr = false;
+  let esc = false;
+  for (let i = 0; i < s.length; i++) {
+    const ch = s[i];
+    if (esc) {
+      out += ch;
+      esc = false;
+      continue;
+    }
+    if (ch === "\\") {
+      out += ch;
+      esc = true;
+      continue;
+    }
+    if (ch === '"') {
+      inStr = !inStr;
+      out += ch;
+      continue;
+    }
+    if (inStr && (ch === "\n" || ch === "\r")) {
+      out += "\\n";
+      continue;
+    }
+    out += ch;
+  }
+  return out;
+}
 
 /** Strip code fences, BOM/NBSP, comments, trailing commas; tolerate bare `items: [...]`. */
 function sanitizeJsonString(text: string): string {
@@ -35,47 +64,57 @@ function sanitizeJsonString(text: string): string {
   s = s.replace(/^\s*\/\/.*$/gm, ""); // // line comments
   s = s.replace(/\/\*[\s\S]*?\*\//g, ""); // /* block comments */
 
-  // Remove BOM and non-breaking spaces
+  // Remove BOM and NBSP
   s = s.replace(/^\uFEFF/, "").replace(/\u00A0/g, " ");
 
   // Remove trailing commas before } or ]
   s = s.replace(/,\s*([}\]])/g, "$1");
 
-  // If it's a bare items: [...] payload without surrounding braces, wrap it
+  // Bare items: [...] → wrap it
   if (!s.startsWith("{") && /^\s*items\s*:\s*\[/.test(s)) {
     s = `{${s}}`;
   }
+
+  // IMPORTANT: escape illegal literal newlines inside strings
+  s = escapeNewlinesInQuotedStrings(s);
 
   return s;
 }
 
 function tryParseJSON(raw: string): unknown | undefined {
   const clean = sanitizeJsonString(raw);
+
+  // 1) Straight parse
   try {
     return JSON.parse(clean);
   } catch {
-    // Try to salvage the first top-level {...} or [...] block
-    const startObj = clean.indexOf("{");
-    const endObj = clean.lastIndexOf("}");
-    if (startObj !== -1 && endObj > startObj) {
-      const slice = clean.slice(startObj, endObj + 1);
-      try {
-        return JSON.parse(slice);
-      } catch {
-        /* fall through */
-      }
-    }
-    const startArr = clean.indexOf("[");
-    const endArr = clean.lastIndexOf("]");
-    if (startArr !== -1 && endArr > startArr) {
-      const slice = clean.slice(startArr, endArr + 1);
-      try {
-        return JSON.parse(slice);
-      } catch {
-        /* fall through */
-      }
+    /* continue */
+  }
+
+  // 2) Salvage first {...} block
+  const startObj = clean.indexOf("{");
+  const endObj = clean.lastIndexOf("}");
+  if (startObj !== -1 && endObj > startObj) {
+    const slice = clean.slice(startObj, endObj + 1);
+    try {
+      return JSON.parse(slice);
+    } catch {
+      /* continue */
     }
   }
+
+  // 3) Salvage first [...] block (model returns a bare array)
+  const startArr = clean.indexOf("[");
+  const endArr = clean.lastIndexOf("]");
+  if (startArr !== -1 && endArr > startArr) {
+    const slice = clean.slice(startArr, endArr + 1);
+    try {
+      return JSON.parse(slice);
+    } catch {
+      /* continue */
+    }
+  }
+
   return undefined;
 }
 
@@ -91,19 +130,15 @@ export async function POST(request: Request) {
     const file = formData.get("file") as File | null;
     const schemaRaw = formData.get("schema") as string | null;
 
-    if (!file) {
-      return NextResponse.json({ error: "No file provided." }, { status: 400 });
-    }
-    if (!schemaRaw) {
-      return NextResponse.json({ error: "No schema provided." }, { status: 400 });
-    }
+    if (!file) return NextResponse.json({ error: "No file provided." }, { status: 400 });
+    if (!schemaRaw) return NextResponse.json({ error: "No schema provided." }, { status: 400 });
 
     const MAX_BYTES = 100 * 1024 * 1024;
     if (file.size > MAX_BYTES) {
       return NextResponse.json({ error: "File too large." }, { status: 413 });
     }
 
-    // Parse and validate schema
+    // Parse & validate schema
     let schemaParsed: unknown;
     try {
       schemaParsed = JSON.parse(schemaRaw);
@@ -134,7 +169,6 @@ export async function POST(request: Request) {
 
     let result: GenerateContentResult;
 
-    // Send the PDF inline (Gemini inline input size is limited; we gate bigger files)
     const INLINE_LIMIT = 18 * 1024 * 1024; // ~18MB inline
     if (file.size <= INLINE_LIMIT) {
       const buffer = Buffer.from(await file.arrayBuffer());
@@ -159,40 +193,26 @@ export async function POST(request: Request) {
 
     const parsed = tryParseJSON(raw);
     if (parsed === undefined) {
-      // Log full (or truncated) raw output for debugging in server logs
-      console.error("Model returned non-JSON (first 2k):", raw.slice(0, 2000));
+      // Log for server diagnostics only
+      console.error("Model returned non-JSON (first 2k chars):", raw.slice(0, 2000));
       return NextResponse.json(
-        {
-          error: "Model returned non-JSON.",
-          detail: raw.slice(0, 2000),
-        },
+        { error: "Model returned non-JSON.", detail: raw.slice(0, 2000) },
         { status: 502 }
       );
     }
 
     return NextResponse.json(parsed);
   } catch (err: unknown) {
-    const e = err as {
-      message?: string;
-      name?: string;
-      status?: number;
-      code?: string;
-    };
+    const e = err as { message?: string; name?: string; status?: number; code?: string };
 
-    // Map some common cases to clearer HTTP statuses
     let status = typeof e?.status === "number" ? e.status : 500;
     const msg = (e?.message || "").toLowerCase();
-
     if (status === 500) {
       if (msg.includes("model") && msg.includes("not found")) status = 404;
       else if (msg.includes("invalid") && msg.includes("schema")) status = 400;
       else if (msg.includes("permission") || msg.includes("unauthorized")) status = 401;
       else if (msg.includes("rate limit") || msg.includes("quota")) status = 429;
-      else if (
-        msg.includes("too large") ||
-        msg.includes("content length") ||
-        msg.includes("payload too large")
-      )
+      else if (msg.includes("too large") || msg.includes("content length") || msg.includes("payload too large"))
         status = 413;
     }
 
