@@ -143,12 +143,8 @@ export async function extractFromPdf(
 ): Promise<PriceRow[]> {
   const buf = toBuffer(file);
 
-  // Use the CJS wrapper to bypass pdf-parse's index.js debug path
-  const parsed = await pdfParse(buf, {
-    // keep in sync with your installed pdfjs-dist version to be safe
-    version: "v3.11.174",
-  });
-
+  // Use the CJS wrapper; it auto-selects a valid pdfjs-dist path
+  const parsed = await pdfParse(buf);
   const text = parsed.text || "";
   const currency = currencyFromText(text);
 
