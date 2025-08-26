@@ -2,13 +2,6 @@
 import { Buffer } from "node:buffer";
 import pdfParse from "@/lib/pdfParseCJS";
 
-const buf = Buffer.from(u8);
-const parsed = await pdfParse(buf, {
-  // optional: line up with your installed pdfjs-dist
-  version: "v3.11.174",
-});
-const text = parsed.text || "";
-
 // --- output row schema (matches your target structure) ---
 export type PriceRow = {
   Supplier: string;
@@ -134,22 +127,27 @@ const makeRow = (
   };
 };
 
-// -------- main API (server) --------
-export async function extractFromPdf(
-  file: ArrayBuffer | Uint8Array,
-  meta: Meta
-): Promise<PriceRow[]> {
-  const { default: pdfParse } = await import("pdf-parse");
-
-  // Normalize + validate input
-  const u8 = file instanceof Uint8Array ? file : new Uint8Array(file);
+function toBuffer(input: ArrayBuffer | Uint8Array | Buffer): Buffer {
+  if (Buffer.isBuffer(input)) return input;
+  const u8 = input instanceof Uint8Array ? input : new Uint8Array(input);
   if (u8.byteLength === 0) {
     throw new Error("Uploaded PDF is empty (0 bytes).");
   }
+  return Buffer.from(u8);
+}
 
-  // pdf-parse is most reliable with a Node Buffer
-  const buf = Buffer.from(u8);
-  const parsed = await pdfParse(buf);
+// -------- main API (server) --------
+export async function extractFromPdf(
+  file: ArrayBuffer | Uint8Array | Buffer,
+  meta: Meta
+): Promise<PriceRow[]> {
+  const buf = toBuffer(file);
+
+  // Use the CJS wrapper to bypass pdf-parse's index.js debug path
+  const parsed = await pdfParse(buf, {
+    // keep in sync with your installed pdfjs-dist version to be safe
+    version: "v3.11.174",
+  });
 
   const text = parsed.text || "";
   const currency = currencyFromText(text);
