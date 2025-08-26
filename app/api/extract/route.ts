@@ -19,36 +19,27 @@ const MODEL_ID = "gemini-2.0-flash";
 function sanitizeJsonString(text: string): string {
   let s = text.trim();
 
-  // Remove markdown fences if present
   if (s.startsWith("```")) {
     s = s.replace(/^```(?:json)?\s*/i, "").replace(/```$/, "").trim();
   }
 
-  // Remove BOM / NBSP
   s = s.replace(/^\uFEFF/, "").replace(/\u00A0/g, " ");
-
-  // Remove trailing commas before } or ]
   s = s.replace(/,\s*([}\]])/g, "$1");
-
   return s;
 }
 
 function tryParseJSON(raw: string): unknown | undefined {
   const clean = sanitizeJsonString(raw);
-
   try {
     return JSON.parse(clean);
   } catch {
-    // salvage the first {...} block
     const start = clean.indexOf("{");
     const end = clean.lastIndexOf("}");
     if (start !== -1 && end !== -1 && end > start) {
       const slice = clean.slice(start, end + 1);
       try {
         return JSON.parse(slice);
-      } catch {
-        // ignore
-      }
+      } catch {}
     }
   }
   return undefined;
@@ -72,7 +63,7 @@ export async function POST(request: Request) {
     const MAX_BYTES = 100 * 1024 * 1024;
     if (file.size > MAX_BYTES) return NextResponse.json({ error: "File too large." }, { status: 413 });
 
-    // Parse and validate schema shape before passing to SDK
+    // Parse and validate schema
     let schemaParsed: unknown;
     try {
       schemaParsed = JSON.parse(schemaRaw);
@@ -89,10 +80,9 @@ export async function POST(request: Request) {
       generationConfig: {
         temperature: 0,
         responseMimeType: "application/json",
-        responseSchema, // <- now properly typed
+        responseSchema,
       },
-      // (optional) steer the model even harder
-      // @ts-expect-error systemInstruction exists in this SDK version
+      // steer the model to produce clean JSON and split multi-codes
       systemInstruction:
         "You convert a PDF into structured data. Return ONLY valid JSON that matches the provided schema. " +
         "Do not include markdown code fences, comments, or extra fields. " +
@@ -101,8 +91,7 @@ export async function POST(request: Request) {
     });
 
     const basePrompt =
-      "Extract the structured data from the following PDF file. " +
-      "Return only JSON conforming to the provided schema.";
+      "Extract the structured data from the following PDF file. Return only JSON conforming to the provided schema.";
 
     let result: GenerateContentResult;
 
@@ -145,7 +134,6 @@ export async function POST(request: Request) {
 
     console.error("Error extracting data:", e);
 
-    // map status for friendlier codes
     let status = typeof e?.status === "number" ? e.status : 500;
     const msg = (e?.message || "").toLowerCase();
     if (status === 500) {
