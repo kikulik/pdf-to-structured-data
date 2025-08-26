@@ -297,7 +297,7 @@ export default function Home() {
           <CardHeader className="space-y-1">
             <CardTitle className="text-2xl">PDF to Structured Data</CardTitle>
             <span className="text-xs font-mono text-muted-foreground">
-              Vendor-agnostic PDF price parser
+              AI powered Extractor
             </span>
           </CardHeader>
 
