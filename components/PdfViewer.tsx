@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { pdfjs, Document, Page } from "react-pdf";
 import "react-pdf/dist/esm/Page/AnnotationLayer.css";
 import "react-pdf/dist/esm/Page/TextLayer.css";
@@ -14,34 +14,35 @@ import {
   SheetTrigger,
 } from "./ui/sheet";
 
-// ✔ Webpack/Next-friendly worker URL (bundled to a static file in prod)
+// Webpack/Next-friendly worker URL for react-pdf path
 pdfjs.GlobalWorkerOptions.workerSrc = new URL(
   "pdfjs-dist/build/pdf.worker.min.js",
   import.meta.url
 ).toString();
 
-// Keep options minimal to avoid fetching non-existent assets
-const options = {
-  // If you copy assets to /public, you can re-enable these:
-  // cMapUrl: "/cmaps/",
-  // standardFontDataUrl: "/standard_fonts/",
-};
+// Keep options minimal (no external CMaps/fonts fetches)
+const options = {};
 
 export default function PdfViewer({ file }: { file: File }) {
   const [bytes, setBytes] = useState<Uint8Array | null>(null);
   const [numPages, setNumPages] = useState<number>();
-  const [containerRef, setContainerRef] = useState<HTMLElement | null>(null);
-  const [containerWidth, setContainerWidth] = useState<number>();
+  const [useFallback, setUseFallback] = useState(false);
   const [errMsg, setErrMsg] = useState<string | null>(null);
+
+  const [containerWidth, setContainerWidth] = useState<number>();
   const [isReading, setIsReading] = useState<boolean>(false);
 
-  // Read File -> Uint8Array so pdf.js uses bytes (no blob/objectURL fetch)
+  // Fallback canvas container
+  const canvasWrapRef = useRef<HTMLDivElement | null>(null);
+
+  // Read File -> Uint8Array (works for both react-pdf and raw pdf.js)
   useEffect(() => {
     let cancelled = false;
     (async () => {
       try {
         setIsReading(true);
         setErrMsg(null);
+        setUseFallback(false);
         const ab = await file.arrayBuffer();
         if (!cancelled) setBytes(new Uint8Array(ab));
       } catch (e) {
@@ -56,6 +57,8 @@ export default function PdfViewer({ file }: { file: File }) {
     };
   }, [file]);
 
+  // Track width for Page sizing
+  const [containerRef, setContainerRef] = useState<HTMLElement | null>(null);
   const onResize = useCallback<ResizeObserverCallback>((entries) => {
     const [entry] = entries;
     if (entry) setContainerWidth(entry.contentRect.width);
@@ -67,10 +70,85 @@ export default function PdfViewer({ file }: { file: File }) {
     setNumPages(numPages);
   }
 
-  function onDocumentLoadError(e: unknown) {
-    console.error("PDF preview load error:", e);
-    setErrMsg("Failed to load PDF file.");
+  async function onDocumentLoadError(e: unknown) {
+    // react-pdf failed (worker/version/URL/etc). Fall back to raw pdf.js render.
+    console.warn("react-pdf failed; falling back to raw pdf.js:", e);
+    setErrMsg("Failed to load PDF with viewer, switching to fallback…");
+    setUseFallback(true);
   }
+
+  // --- Fallback renderer using pdfjs-dist directly (canvas) ---
+  useEffect(() => {
+    if (!useFallback || !bytes || !canvasWrapRef.current) return;
+
+    const container = canvasWrapRef.current;
+    let cancelled = false;
+
+    (async () => {
+      try {
+        // Dynamic import of the ESM build
+        const pdfMod = await import("pdfjs-dist/build/pdf.mjs");
+        // Configure worker for this path as well
+        (pdfMod as unknown as { GlobalWorkerOptions: { workerSrc: string } })
+          .GlobalWorkerOptions.workerSrc = new URL(
+          "pdfjs-dist/build/pdf.worker.min.js",
+          import.meta.url
+        ).toString();
+
+        const getDocument = (pdfMod as unknown as {
+          getDocument: (src: { data: Uint8Array }) => {
+            promise: Promise<{
+              numPages: number;
+              getPage: (n: number) => Promise<{
+                getViewport: (o: { scale: number }) => { width: number; height: number; };
+                render: (o: { canvasContext: CanvasRenderingContext2D; viewport: any }) => { promise: Promise<void> };
+              }>;
+            }>;
+          };
+        }).getDocument;
+
+        const task = getDocument({ data: bytes });
+        const pdf = await task.promise;
+
+        if (cancelled) return;
+
+        setNumPages(pdf.numPages);
+        container.innerHTML = "";
+
+        // Scale canvas to container width if possible
+        const targetWidth = containerRef?.clientWidth || 800;
+        for (let i = 1; i <= pdf.numPages; i++) {
+          const page = await pdf.getPage(i);
+          const viewport0 = page.getViewport({ scale: 1.0 });
+          const scale = targetWidth / viewport0.width;
+          const viewport = page.getViewport({ scale: scale || 1.2 });
+
+          const canvas = document.createElement("canvas");
+          canvas.style.display = "block";
+          canvas.style.margin = "0 auto 12px auto";
+          canvas.width = viewport.width;
+          canvas.height = viewport.height;
+
+          const ctx = canvas.getContext("2d");
+          if (ctx) {
+            await page.render({ canvasContext: ctx, viewport }).promise;
+            container.appendChild(canvas);
+          }
+        }
+
+        setErrMsg(null);
+      } catch (err) {
+        console.error("Fallback pdf.js render failed:", err);
+        setErrMsg("Failed to render PDF.");
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+      if (canvasWrapRef.current) canvasWrapRef.current.innerHTML = "";
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [useFallback, bytes]);
 
   return (
     <Sheet>
@@ -93,14 +171,15 @@ export default function PdfViewer({ file }: { file: File }) {
             </p>
           )}
 
-          {bytes && (
+          {/* First try react-pdf */}
+          {bytes && !useFallback && (
             <Document
               file={{ data: bytes }}
               onLoadSuccess={onDocumentLoadSuccess}
               onLoadError={onDocumentLoadError}
               options={options}
               loading={<p className="text-sm opacity-70">Loading PDF…</p>}
-              error={<p className="text-sm text-red-500">{errMsg ?? "Failed to load PDF file."}</p>}
+              error={<p className="text-sm text-red-500">Failed to load PDF. Switching to fallback…</p>}
               noData={<p className="text-sm opacity-70">No PDF file.</p>}
             >
               {Array.from(new Array(numPages || 0), (_el, index) => (
@@ -113,8 +192,11 @@ export default function PdfViewer({ file }: { file: File }) {
             </Document>
           )}
 
-          {errMsg && (
-            <p className="text-sm text-red-500 mt-2">{errMsg}</p>
+          {/* If react-pdf fails, draw with raw pdf.js */}
+          {useFallback && (
+            <div ref={canvasWrapRef}>
+              {errMsg && <p className="text-sm text-red-500 mt-2">{errMsg}</p>}
+            </div>
           )}
         </div>
       </SheetContent>
