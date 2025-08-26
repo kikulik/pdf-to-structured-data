@@ -161,62 +161,31 @@ export default function Home() {
       alert("Please upload a PDF before extracting.");
       return;
     }
-
-    try {
-      setLoading(true);
-      const schema = buildPriceRowSchema();
-      const fd = new FormData();
-      fd.append("file", file);
-      fd.append("schema", JSON.stringify(schema));
-
-      const res = await fetch("/api/extract", { method: "POST", body: fd });
-      if (!res.ok) {
-        const j: unknown = await res.json().catch(() => ({}));
-        const msg =
-          (typeof j === "object" && j && "detail" in j && typeof (j as { detail: unknown }).detail === "string"
-            ? (j as { detail: string }).detail
-            : typeof j === "object" && j && "error" in j && typeof (j as { error: unknown }).error === "string"
-            ? (j as { error: string }).error
-            : "AI extraction failed.");
-        throw new Error(msg);
-      }
-      const j = await res.json().catch(() => ({} as any));
-      const text = typeof j?.detail === "string" ? j.detail : "";
+  
+    // tiny helper: safe JSON parse
+    const parseJSON = <T = unknown>(s: string): T | null => {
       try {
-        // reuse the same recovery idea
-        const candidate = JSON.parse(text);                  // try direct
-        const items = Array.isArray(candidate) ? candidate
-          : (candidate?.items && Array.isArray(candidate.items)) ? candidate.items
-          : null;
-        if (items) {
-          // ...normalize and setRows(items) like you do now
-          // and simply return (don’t throw)
-          return;
-        }
-      } catch {}
-      throw new Error(
-        (j?.error as string) || "AI extraction failed."
-      );
-
-      const data: unknown = await res.json();
-
-      // Accept either { items: [...] } or a bare array
-      const candidate: unknown = hasItems(data) ? (data as AIContainer).items : data;
-      const itemsUnknown: unknown[] = Array.isArray(candidate) ? candidate : [];
-
-      const normalized: PriceRow[] = itemsUnknown.map((rUnknown) => {
+        return JSON.parse(s) as T;
+      } catch {
+        return null;
+      }
+    };
+  
+    // tiny helper: normalize unknown[] → PriceRow[]
+    const normalizeRows = (itemsUnknown: unknown[]): PriceRow[] => {
+      return itemsUnknown.map((rUnknown) => {
         const r = rUnknown as Record<string, unknown>;
-
+  
         const currency = toISO3(r.ISOCurrency);
         const modelDesc = toStr(
           r.ModelDescription ?? r.Description ?? r["Description EN"]
         );
-
+  
         const modelCode = toStr(r.ModelCode);
         const t = toStr(r.T1orT2);
         const tier: "T1" | "T2" =
           t === "T1" ? "T1" : t === "T2" ? "T2" : toNum(r.T2List) ? "T2" : "T1";
-
+  
         const base: PriceRow = {
           Supplier: toStr(r.Supplier) || meta.supplier || "",
           Manufacturer: toStr(r.Manufacturer) || meta.manufacturer || "",
@@ -243,8 +212,8 @@ export default function Home() {
           PowerWatts: toNum(r.PowerWatts),
           FileName: toStr(r.FileName) || file.name,
         };
-
-        // If model gave only one of T1/T2 prices, mirror into the selected tier for convenience
+  
+        // mirror single-tier into chosen tier
         if (tier === "T1" && base.T1List === 0 && base.T2List > 0) {
           base.T1List = base.T2List;
           base.T1Cost = base.T2Cost;
@@ -252,11 +221,62 @@ export default function Home() {
           base.T2List = base.T1List;
           base.T2Cost = base.T1Cost;
         }
-
+  
         return base;
       });
-
-      setRows(normalized);
+    };
+  
+    try {
+      setLoading(true);
+      const schema = buildPriceRowSchema();
+      const fd = new FormData();
+      fd.append("file", file);
+      fd.append("schema", JSON.stringify(schema));
+  
+      const res = await fetch("/api/extract", { method: "POST", body: fd });
+      const bodyText = await res.text(); // read once
+  
+      // ---- Error path: try to salvage ----
+      if (!res.ok) {
+        type ExtractErr = { error?: string; detail?: string };
+        const errObj = parseJSON<ExtractErr>(bodyText);
+  
+        // If server included raw model output in `detail`, try parsing it
+        const detailText = typeof errObj?.detail === "string" ? errObj.detail : "";
+        const detailJSON = detailText ? parseJSON<unknown>(detailText) : null;
+  
+        // Accept either { items: [...] } or a bare array
+        let itemsUnknown: unknown[] = [];
+        if (Array.isArray(detailJSON)) {
+          itemsUnknown = detailJSON;
+        } else if (
+          detailJSON &&
+          typeof detailJSON === "object" &&
+          "items" in detailJSON &&
+          Array.isArray((detailJSON as { items: unknown[] }).items)
+        ) {
+          itemsUnknown = (detailJSON as { items: unknown[] }).items;
+        }
+  
+        if (itemsUnknown.length > 0) {
+          setRows(normalizeRows(itemsUnknown));
+          return;
+        }
+  
+        const msg = errObj?.error || detailText || "AI extraction failed.";
+        throw new Error(msg);
+      }
+  
+      // ---- Success path ----
+      const dataUnknown = parseJSON<unknown>(bodyText);
+      if (dataUnknown == null) throw new Error("AI returned invalid JSON.");
+  
+      const candidate: unknown = hasItems(dataUnknown)
+        ? (dataUnknown as AIContainer).items
+        : dataUnknown;
+  
+      const itemsUnknown: unknown[] = Array.isArray(candidate) ? candidate : [];
+      setRows(normalizeRows(itemsUnknown));
     } catch (e: unknown) {
       console.error(e);
       alert(e instanceof Error ? e.message : "AI extraction failed.");
@@ -265,44 +285,6 @@ export default function Home() {
     }
   };
 
-  return (
-    <main className="min-h-screen p-6">
-      {/* Wide workspace container */}
-      <div className="mx-auto max-w-[1600px] grid gap-6 lg:grid-cols-2 xl:grid-cols-[520px_1fr]">
-        {/* Left: inputs & actions */}
-        <Card className="border bg-card">
-          <CardHeader className="space-y-1">
-            <CardTitle className="text-2xl">PDF to Structured Data</CardTitle>
-            <span className="text-xs font-mono text-muted-foreground">
-              Vendor-agnostic PDF price parser
-            </span>
-          </CardHeader>
-
-        <CardContent className="space-y-6">
-            <FileUpload onFileSelect={handleFileSelect} />
-            <MetaForm onChange={setMeta} />
-
-            <div className="flex flex-wrap gap-3">
-              <button
-                className="border px-4 py-2 rounded bg-primary text-primary-foreground disabled:opacity-50"
-                onClick={handleExtractFast}
-                disabled={!file || loading}
-                title="Fast heuristic parser (no AI)."
-              >
-                {loading ? "Processing..." : "Extract Data (fast)"}
-              </button>
-
-              <button
-                className="border px-4 py-2 rounded bg-foreground text-background disabled:opacity-50"
-                onClick={handleExtractAI}
-                disabled={!file || loading}
-                title="Use Gemini with a JSON Schema to reason about Supplier/Manufacturer/ModelCode."
-              >
-                {loading ? "Thinking…" : "Smart Extract (AI)"}
-              </button>
-            </div>
-          </CardContent>
-        </Card>
 
         {/* Right: live preview + results */}
         <Card className="border bg-card overflow-hidden">
