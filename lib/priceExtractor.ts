@@ -126,15 +126,18 @@ const makeRow = (
 };
 
 // -------- main API (server) --------
-export async function extractFromPdf(
-  file: ArrayBuffer,
+ export async function extractFromPdf(
+  file: ArrayBuffer | Uint8Array,
   meta: Meta
 ): Promise<PriceRow[]> {
-  // ✅ Use pdf-parse but pass Uint8Array (NOT Node Buffer)
   const { default: pdfParse } = await import("pdf-parse");
-  const u8 = new Uint8Array(file);
-
-  const parsed = await pdfParse(u8);
+  // Normalize to a Node Buffer — some pdf-parse versions are picky.
+  const u8 = file instanceof Uint8Array ? file : new Uint8Array(file);
+  if (u8.byteLength === 0) {
+    throw new Error("Uploaded PDF is empty (0 bytes).");
+  }
+  const buf = Buffer.from(u8);
+  const parsed = await pdfParse(buf);
   const text = parsed.text || "";
   const currency = currencyFromText(text);
 
