@@ -1,4 +1,3 @@
-// next.config.ts (unchanged from the last step)
 import type { NextConfig } from "next";
 import path from "path";
 
@@ -7,8 +6,9 @@ const nextConfig: NextConfig = {
   webpack: (config) => {
     config.resolve.alias = {
       ...(config.resolve.alias || {}),
+      // keep native-canvas out of client bundles
       canvas: path.resolve(__dirname, "./empty-module.ts"),
-      "pdfjs-dist/build/pdf.worker.min.mjs": "pdfjs-dist/build/pdf.worker.min.js",
+      // ⛔ REMOVE any pdfjs worker alias you added earlier
     };
     return config;
   },
