@@ -17,42 +17,33 @@ function getGenAI() {
 
 const MODEL_ID = process.env.GEMINI_MODEL ?? "gemini-2.0-flash";
 
-/* ---------- Unicode + JSON cleanup helpers ---------- */
+/* ---------------- JSON salvage helpers ---------------- */
 
-// Normalize Unicode quotes & spaces the model sometimes uses
 function normalizeUnicode(s: string): string {
   return s
     // curly double quotes → "
     .replace(/[\u201C\u201D\u2033]/g, '"')
     // curly single quotes → '
     .replace(/[\u2018\u2019\u2032]/g, "'")
-    // various spaces → normal space
+    // exotic spaces, BOM → space
     .replace(/[\u00A0\u2000-\u200D\u202F\u205F\u3000\uFEFF]/g, " ")
-    // line/paragraph separators
+    // line/paragraph separators → newline
     .replace(/[\u2028\u2029]/g, "\n");
 }
 
-// Escape raw control chars inside quoted strings (illegal in JSON)
 function escapeControlCharsInStrings(s: string): string {
-  let out = "";
-  let inStr = false;
-  let esc = false;
+  let out = "", inStr = false, esc = false;
   for (let i = 0; i < s.length; i++) {
-    const ch = s[i];
-    const code = ch.charCodeAt(0);
-
+    const ch = s[i], code = ch.charCodeAt(0);
     if (esc) { out += ch; esc = false; continue; }
     if (ch === "\\") { out += ch; esc = true; continue; }
     if (ch === '"') { inStr = !inStr; out += ch; continue; }
-
     if (inStr && code < 0x20) {
-      // map common controls
       if (ch === "\n") { out += "\\n"; continue; }
       if (ch === "\r") { out += "\\r"; continue; }
       if (ch === "\t") { out += "\\t"; continue; }
       if (ch === "\b") { out += "\\b"; continue; }
       if (ch === "\f") { out += "\\f"; continue; }
-      // other controls → \u00XX
       out += "\\u" + code.toString(16).padStart(4, "0");
       continue;
     }
@@ -61,36 +52,65 @@ function escapeControlCharsInStrings(s: string): string {
   return out;
 }
 
+function quoteUnquotedKeys(s: string): string {
+  // { key: … } or , key: …  → quote key if not already quoted
+  return s.replace(/([{\s,])([A-Za-z_][A-Za-z0-9_]*)(\s*:)/g, (m, p1, key, p3) =>
+    `${p1}"${key}"${p3}`
+  );
+}
+
+function singleToDoubleQuotedStrings(s: string): string {
+  // '...'(with escapes) → "..."
+  return s.replace(/'((?:[^'\\]|\\.)*)'/g, (_m, inner) => {
+    const unescaped = String(inner).replace(/"/g, '\\"');
+    return `"${unescaped}"`;
+  });
+}
+
 function sanitizeJsonString(text: string): string {
   let s = (text ?? "").trim();
 
-  // Strip ``` fences
+  // strip code fences
   if (s.startsWith("```")) {
     s = s.replace(/^```(?:json)?\s*/i, "").replace(/```$/, "").trim();
   }
 
-  // Remove chatty preambles
+  // strip lead-in chatter
   s = s.replace(/^\s*(?:here(?:'s| is)\s+)?(?:the\s+)?(?:json|output|result|response)\s*:?\s*/i, "");
 
-  // Kill JS-style comments
+  // kill JS comments
   s = s.replace(/^\s*\/\/.*$/gm, "").replace(/\/\*[\s\S]*?\*\//g, "");
 
-  // Normalize weird Unicode
+  // unicode normalize
   s = normalizeUnicode(s);
 
-  // Trailing commas before } or ]
+  // trailing commas
   s = s.replace(/,\s*([}\]])/g, "$1");
 
-  // bare items: [...] → wrap
+  // bare items: [...]
   if (!s.startsWith("{") && /^\s*items\s*:\s*\[/.test(s)) s = `{${s}}`;
 
-  // Escape illegal controls inside strings
+  // Python / JS-ish literals → JSON
+  s = s
+    .replace(/\bTrue\b/g, "true")
+    .replace(/\bFalse\b/g, "false")
+    .replace(/\bNone\b/g, "null")
+    .replace(/\bNaN\b/g, "null")
+    .replace(/\bInfinity\b/g, "null")
+    .replace(/\b-Infinity\b/g, "null");
+
+  // quote unquoted keys before converting quotes
+  s = quoteUnquotedKeys(s);
+
+  // convert single-quoted strings
+  s = singleToDoubleQuotedStrings(s);
+
+  // escape control chars/newlines inside strings
   s = escapeControlCharsInStrings(s);
 
   return s;
 }
 
-// Bracket-aware scan to find the first JSON array that looks like items
 function extractLikelyItemsArray(raw: string): string | null {
   const s = raw;
   let inStr = false, esc = false, depth = 0, start = -1;
@@ -100,17 +120,12 @@ function extractLikelyItemsArray(raw: string): string | null {
     if (ch === "\\") { esc = true; continue; }
     if (ch === '"') { inStr = !inStr; continue; }
     if (inStr) continue;
-
-    if (ch === "[") {
-      if (depth === 0) start = i;
-      depth++;
-    } else if (ch === "]") {
+    if (ch === "[") { if (depth === 0) start = i; depth++; }
+    else if (ch === "]") {
       depth--;
       if (depth === 0 && start !== -1) {
         const slice = s.slice(start, i + 1);
-        if (/"ModelCode"\s*:/.test(slice) || /"ModelDescription"\s*:/.test(slice)) {
-          return slice;
-        }
+        if (/"ModelCode"\s*:/.test(slice) || /"ModelDescription"\s*:/.test(slice)) return slice;
         start = -1;
       }
     }
@@ -154,7 +169,7 @@ function isPlainObject(x: unknown): x is Record<string, unknown> {
   return typeof x === "object" && x !== null && !Array.isArray(x);
 }
 
-/* ---------- Route ---------- */
+/* ---------------- Route ---------------- */
 
 export async function POST(request: Request) {
   try {
@@ -197,8 +212,8 @@ export async function POST(request: Request) {
       "Extract the structured data from the following PDF file. Return only JSON conforming to the provided schema.";
 
     let result: GenerateContentResult;
-
     const INLINE_LIMIT = 18 * 1024 * 1024;
+
     if (file.size <= INLINE_LIMIT) {
       const buffer = Buffer.from(await file.arrayBuffer());
       const base64 = buffer.toString("base64");
