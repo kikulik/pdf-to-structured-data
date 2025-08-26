@@ -29,6 +29,11 @@ const toNum = (v: unknown) => {
   const n = Number.parseFloat(String(v ?? ""));
   return Number.isFinite(n) ? n : 0;
 };
+const toQuoteType = (v: unknown): "Price List" | "Quote" => {
+  const s = String(v ?? "").trim().toLowerCase();
+  if (s.includes("quote") || s === "q" || s === "quotation") return "Quote";
+  return "Price List";
+};
 const toISO3 = (v: unknown): "EUR" | "USD" | "GBP" => {
   const s = String(v ?? "").toUpperCase();
   if (s === "EUR" || s === "USD" || s === "GBP") return s as "EUR" | "USD" | "GBP";
@@ -213,7 +218,7 @@ export default function Home() {
           ModelDescriptionLanguage2: toStr(r.ModelDescriptionLanguage2),
           ModelDescriptionLanguage3: toStr(r.ModelDescriptionLanguage3),
           ModelDescriptionLanguage4: toStr(r.ModelDescriptionLanguage4),
-          QuoteOrPriceList: toStr(r.QuoteOrPriceList) || "Price List",
+          QuoteOrPriceList: toQuoteType(r.QuoteOrPriceList),
           WeightKg: toNum(r.WeightKg),
           HeightMm: toNum(r.HeightMm),
           LengthMm: toNum(r.LengthMm),
