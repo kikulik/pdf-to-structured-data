@@ -1,6 +1,6 @@
 // lib/priceExtractor.ts
 
-// --- schema your app emits (matches your “3D BULLET RIG” example) ---
+// --- output row schema (matches your target structure) ---
 export type PriceRow = {
   Supplier: string;
   Manufacturer: string;
@@ -11,7 +11,7 @@ export type PriceRow = {
   T2List: number;
   T2Cost: number;
   ISOCurrency: "EUR" | "USD" | "GBP";
-  ValidityDate: string; // ISO 8601 or ""
+  ValidityDate: string; // ISO or ""
   T1orT2: "T1" | "T2";
   MaterialID: string;
   SAPNumber: string;
@@ -25,7 +25,7 @@ export type PriceRow = {
   LengthMm: number;
   WidthMm: number;
   PowerWatts: number;
-  FileName: string; // source PDF file name
+  FileName: string; // source PDF name
 };
 
 type Meta = {
@@ -35,74 +35,7 @@ type Meta = {
   fileName: string;
 };
 
-// ---- Minimal typings for pdfjs-dist we use server-side ----
-type PDFJSModule = {
-  GlobalWorkerOptions?: { workerSrc?: unknown };
-  getDocument: (
-    options:
-      | string
-      | {
-          data?: Uint8Array | ArrayBuffer;
-          disableWorker?: boolean;
-          isEvalSupported?: boolean;
-        }
-  ) => { promise: Promise<PDFDocumentProxy> };
-};
-
-type TextItem = { str?: string };
-type TextContent = { items: TextItem[] };
-
-type PDFPageProxy = {
-  getTextContent(): Promise<TextContent>;
-};
-
-type PDFDocumentProxy = {
-  numPages: number;
-  getPage(pageNumber: number): Promise<PDFPageProxy>;
-  cleanup?: () => void;
-};
-
-// ----------- PDF TEXT (server) via pdfjs-dist (no workers, no fs) -----------
-async function pdfBufferToText(data: ArrayBuffer | Uint8Array): Promise<string> {
-  // Always hand pdf.js a Uint8Array
-  const u8 = data instanceof Uint8Array ? data : new Uint8Array(data);
-
-  // Import the package root (stable across versions)
-  const pdfjsMod: unknown = await import("pdfjs-dist");
-  const pdfjs = pdfjsMod as PDFJSModule;
-
-  // Ensure we don't spawn a worker in this server environment
-  if (pdfjs.GlobalWorkerOptions) {
-    pdfjs.GlobalWorkerOptions.workerSrc = undefined;
-  }
-
-  const loadingTask = pdfjs.getDocument({
-    data: u8,
-    disableWorker: true,
-    isEvalSupported: false,
-  });
-
-  const pdf = await loadingTask.promise;
-  let out = "";
-
-  for (let i = 1; i <= pdf.numPages; i++) {
-    const page = await pdf.getPage(i);
-    const content = await page.getTextContent();
-    const items: TextItem[] = content.items;
-    const textLine = items.map((it) => (typeof it.str === "string" ? it.str : "")).join(" ");
-    out += textLine + "\n";
-  }
-
-  try {
-    pdf.cleanup?.();
-  } catch {
-    // no-op
-  }
-
-  return out;
-}
-
-// ----------- helpers -----------
+// ---- helpers ----
 const currencyFromText = (txt: string): "EUR" | "USD" | "GBP" => {
   if (txt.includes("€") || /\bEUR\b/i.test(txt)) return "EUR";
   if (txt.includes("$") || /\bUSD\b/i.test(txt)) return "USD";
@@ -110,7 +43,7 @@ const currencyFromText = (txt: string): "EUR" | "USD" | "GBP" => {
   return "EUR";
 };
 
-// normalize number strings like “4.377,00” or “4,377.00” or “4395”
+// normalize “4.377,00” / “4,377.00” / “4395”
 const parseMoney = (s: string): number => {
   let x = s.replace(/[^\d.,]/g, "").trim();
   if (!x) return 0;
@@ -128,22 +61,19 @@ const parseMoney = (s: string): number => {
 const MODEL_RX = /([A-Z0-9][A-Z0-9._/-]{2,})/gi;
 const PRICE_RX = /([€$£]?\s?\d{1,3}(?:[.,]\d{3})*(?:[.,]\d{2})?)/g;
 
-// very light heuristics to guess meta if user left them blank
+// very light meta guess if user leaves inputs empty
 function guessMetaFromText(text: string): Partial<Meta> {
   const lines = text.split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
   const top = lines.slice(0, 50).join("\n");
 
-  // Manufacturer/Supplier: pick the longest ALL-CAPS group near the top that isn't “PRICE LIST”
   let mfg = "";
   const capLines = top
     .split("\n")
     .filter((l) => /^[A-Z0-9 ()&.,/-]{6,}$/.test(l) && !/PRICE\s*LIST/i.test(l));
   if (capLines.length) {
-    mfg = capLines.sort((a, b) => b.length - a.length)[0];
-    mfg = mfg.replace(/\s*[.,:;-]+$/, "").trim();
+    mfg = capLines.sort((a, b) => b.length - a.length)[0].replace(/\s*[.,:;-]+$/, "").trim();
   }
 
-  // Validity date: try YYYY-MM-DD or DD/MM/YYYY or Month YYYY
   let validity = "";
   const dateMatch =
     top.match(/\b(20\d{2})[-/.](0[1-9]|1[0-2])[-/.](0[1-9]|[12]\d|3[01])\b/) ||
@@ -195,19 +125,20 @@ const makeRow = (
   };
 };
 
-// ----------- main API -----------
+// -------- main API (server) --------
 export async function extractFromPdf(
   file: ArrayBuffer,
   meta: Meta
 ): Promise<PriceRow[]> {
-  // ✅ Use Uint8Array, not Buffer
+  // ✅ Use pdf-parse but pass Uint8Array (NOT Node Buffer)
+  const { default: pdfParse } = await import("pdf-parse");
   const u8 = new Uint8Array(file);
 
-  // read text from PDF without touching the filesystem
-  const text = await pdfBufferToText(u8);
+  const parsed = await pdfParse(u8);
+  const text = parsed.text || "";
   const currency = currencyFromText(text);
 
-  // Merge user-provided (optional) meta with guesses
+  // Merge optional user meta with guesses
   const guessed = guessMetaFromText(text);
   const mergedMeta: Meta = {
     supplier: meta.supplier || guessed.supplier || "",
@@ -251,7 +182,7 @@ export async function extractFromPdf(
     }
   }
 
-  // de-dup model+price
+  // de-dup: model+price
   const seen = new Set<string>();
   const deduped = rows.filter((r) => {
     const key = `${r.ModelCode}|${r.T2List}`;
