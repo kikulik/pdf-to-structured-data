@@ -1,4 +1,3 @@
-// app/api/extract/route.ts
 import { NextResponse } from "next/server";
 import {
   GoogleGenerativeAI,
@@ -18,60 +17,83 @@ function getGenAI() {
 
 const MODEL_ID = process.env.GEMINI_MODEL ?? "gemini-2.0-flash";
 
-/** Escape raw line breaks that appear inside quoted strings (illegal in JSON). */
-function escapeNewlinesInQuotedStrings(s: string): string {
+/* ---------- Unicode + JSON cleanup helpers ---------- */
+
+// Normalize Unicode quotes & spaces the model sometimes uses
+function normalizeUnicode(s: string): string {
+  return s
+    // curly double quotes → "
+    .replace(/[\u201C\u201D\u2033]/g, '"')
+    // curly single quotes → '
+    .replace(/[\u2018\u2019\u2032]/g, "'")
+    // various spaces → normal space
+    .replace(/[\u00A0\u2000-\u200D\u202F\u205F\u3000\uFEFF]/g, " ")
+    // line/paragraph separators
+    .replace(/[\u2028\u2029]/g, "\n");
+}
+
+// Escape raw control chars inside quoted strings (illegal in JSON)
+function escapeControlCharsInStrings(s: string): string {
   let out = "";
   let inStr = false;
   let esc = false;
   for (let i = 0; i < s.length; i++) {
     const ch = s[i];
-    if (esc) {
-      out += ch; esc = false; continue;
-    }
+    const code = ch.charCodeAt(0);
+
+    if (esc) { out += ch; esc = false; continue; }
     if (ch === "\\") { out += ch; esc = true; continue; }
     if (ch === '"') { inStr = !inStr; out += ch; continue; }
-    if (inStr && (ch === "\n" || ch === "\r")) { out += "\\n"; continue; }
+
+    if (inStr && code < 0x20) {
+      // map common controls
+      if (ch === "\n") { out += "\\n"; continue; }
+      if (ch === "\r") { out += "\\r"; continue; }
+      if (ch === "\t") { out += "\\t"; continue; }
+      if (ch === "\b") { out += "\\b"; continue; }
+      if (ch === "\f") { out += "\\f"; continue; }
+      // other controls → \u00XX
+      out += "\\u" + code.toString(16).padStart(4, "0");
+      continue;
+    }
     out += ch;
   }
   return out;
 }
 
-/** Basic cleanup + tolerate bare `items: [...]` */
 function sanitizeJsonString(text: string): string {
-  let s = text.trim();
+  let s = (text ?? "").trim();
 
-  // Strip code fences
+  // Strip ``` fences
   if (s.startsWith("```")) {
     s = s.replace(/^```(?:json)?\s*/i, "").replace(/```$/, "").trim();
   }
 
-  // Remove chatty lead-ins
+  // Remove chatty preambles
   s = s.replace(/^\s*(?:here(?:'s| is)\s+)?(?:the\s+)?(?:json|output|result|response)\s*:?\s*/i, "");
 
   // Kill JS-style comments
-  s = s.replace(/^\s*\/\/.*$/gm, "");
-  s = s.replace(/\/\*[\s\S]*?\*\//g, "");
+  s = s.replace(/^\s*\/\/.*$/gm, "").replace(/\/\*[\s\S]*?\*\//g, "");
 
-  // BOM & NBSP
-  s = s.replace(/^\uFEFF/, "").replace(/\u00A0/g, " ");
+  // Normalize weird Unicode
+  s = normalizeUnicode(s);
 
-  // Trailing commas
+  // Trailing commas before } or ]
   s = s.replace(/,\s*([}\]])/g, "$1");
 
-  // Bare items: [...]
+  // bare items: [...] → wrap
   if (!s.startsWith("{") && /^\s*items\s*:\s*\[/.test(s)) s = `{${s}}`;
 
-  // Fix illegal newlines in strings
-  s = escapeNewlinesInQuotedStrings(s);
+  // Escape illegal controls inside strings
+  s = escapeControlCharsInStrings(s);
 
   return s;
 }
 
-/** Try to find the first array that looks like items (contains "ModelCode") with bracket-aware scan. */
+// Bracket-aware scan to find the first JSON array that looks like items
 function extractLikelyItemsArray(raw: string): string | null {
   const s = raw;
   let inStr = false, esc = false, depth = 0, start = -1;
-
   for (let i = 0; i < s.length; i++) {
     const ch = s[i];
     if (esc) { esc = false; continue; }
@@ -98,28 +120,29 @@ function extractLikelyItemsArray(raw: string): string | null {
 
 function tryParseJSON(raw: string): unknown | undefined {
   const clean = sanitizeJsonString(raw);
-  // 1) Straight parse
+
+  // 1) direct
   try { return JSON.parse(clean); } catch {}
 
-  // 2) Extract object block
+  // 2) salvage first {...}
   const so = clean.indexOf("{"), eo = clean.lastIndexOf("}");
   if (so !== -1 && eo > so) {
-    const objSlice = clean.slice(so, eo + 1);
-    try { return JSON.parse(objSlice); } catch {}
+    const slice = clean.slice(so, eo + 1);
+    try { return JSON.parse(slice); } catch {}
   }
 
-  // 3) Extract array block
+  // 3) salvage first [...]
   const sa = clean.indexOf("["), ea = clean.lastIndexOf("]");
   if (sa !== -1 && ea > sa) {
-    const arrSlice = clean.slice(sa, ea + 1);
-    try { return JSON.parse(arrSlice); } catch {}
+    const slice = clean.slice(sa, ea + 1);
+    try { return JSON.parse(slice); } catch {}
   }
 
-  // 4) Bracket-aware: find items array and wrap
-  const itemsArray = extractLikelyItemsArray(clean);
-  if (itemsArray) {
+  // 4) bracket-aware items array → wrap as { items: [...] }
+  const items = extractLikelyItemsArray(clean);
+  if (items) {
     try {
-      const arr = JSON.parse(itemsArray);
+      const arr = JSON.parse(items);
       return { items: arr };
     } catch {}
   }
@@ -130,6 +153,8 @@ function tryParseJSON(raw: string): unknown | undefined {
 function isPlainObject(x: unknown): x is Record<string, unknown> {
   return typeof x === "object" && x !== null && !Array.isArray(x);
 }
+
+/* ---------- Route ---------- */
 
 export async function POST(request: Request) {
   try {
