@@ -2,7 +2,9 @@
 import { Buffer } from "node:buffer";
 import pdfParse from "@/lib/pdfParseCJS";
 
-// --- output row schema (matches your target structure) ---
+/**
+ * Output row schema (target structure)
+ */
 export type PriceRow = {
   Supplier: string;
   Manufacturer: string;
@@ -37,18 +39,32 @@ type Meta = {
   fileName: string;
 };
 
-// ---- helpers ----
-const currencyFromText = (txt: string): "EUR" | "USD" | "GBP" => {
-  if (txt.includes("€") || /\bEUR\b/i.test(txt)) return "EUR";
-  if (txt.includes("$") || /\bUSD\b/i.test(txt)) return "USD";
-  if (txt.includes("£") || /\bGBP\b/i.test(txt)) return "GBP";
-  return "EUR";
+/* ----------------------- helpers ----------------------- */
+
+const MODEL_RX = /([A-Z0-9][A-Z0-9._/-]{2,})/gi;
+// be generous, we’ll filter after
+const PRICE_RX = /([€$£]?\s?\d{1,3}(?:[.,]\d{3})*(?:[.,]\d{2})?|\b(?:EUR|USD|GBP)\s*\d+(?:[.,]\d{2})?\b)/g;
+
+const isBoilerplate = (l: string): boolean =>
+  /\b(page\s*\d+|terms|validity|prepared for|price list|trade price|copyright)\b/i.test(l) ||
+  /^\s*(?:$|\d+\s*\/\s*\d+)$/.test(l);
+
+const isLikelyPrice = (t: string): boolean => {
+  const s = t.trim();
+  const dec = /[.,]\d{2}\b/.test(s);
+  const sym = /[€$£]/.test(s) || /\b(?:EUR|USD|GBP)\b/i.test(s);
+  const year = /\b20\d{2}\b/.test(s);
+  const pageish = /page\s*\d+/i.test(s) || /\b\d+\s*\/\s*\d+\b/.test(s);
+  return (sym || dec) && !year && !pageish;
 };
 
-// normalize “4.377,00” / “4,377.00” / “4395”
+// keep cents; normalize to 2 decimals
 const parseMoney = (s: string): number => {
-  let x = s.replace(/[^\d.,]/g, "").trim();
+  let x = s.replace(/[^\d.,-]/g, "").trim();
   if (!x) return 0;
+  const negative = x.startsWith("-");
+  x = x.replace(/^-/, "");
+
   if (x.includes(",") && x.includes(".")) {
     const lastComma = x.lastIndexOf(",");
     const lastDot = x.lastIndexOf(".");
@@ -57,15 +73,28 @@ const parseMoney = (s: string): number => {
   }
   x = x.replace(",", ".");
   const n = Number(x);
-  return Number.isFinite(n) ? Math.round(n) : 0;
+  if (!Number.isFinite(n)) return 0;
+  const v = negative ? -n : n;
+  return Math.round(v * 100) / 100;
 };
 
-const MODEL_RX = /([A-Z0-9][A-Z0-9._/-]{2,})/gi;
-const PRICE_RX = /([€$£]?\s?\d{1,3}(?:[.,]\d{3})*(?:[.,]\d{2})?)/g;
+const currencyFromText = (txt: string): "EUR" | "USD" | "GBP" => {
+  if (/[€]|EUR\b/i.test(txt)) return "EUR";
+  if (/[$]|USD\b/i.test(txt)) return "USD";
+  if (/[£]|GBP\b/i.test(txt)) return "GBP";
+  const m = txt.match(/[€$£]/);
+  if (m?.[0] === "€") return "EUR";
+  if (m?.[0] === "$") return "USD";
+  if (m?.[0] === "£") return "GBP";
+  return "EUR";
+};
 
 // very light meta guess if user leaves inputs empty
 function guessMetaFromText(text: string): Partial<Meta> {
-  const lines = text.split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
+  const lines = text
+    .split(/\r?\n/)
+    .map((l) => l.trim())
+    .filter(Boolean);
   const top = lines.slice(0, 50).join("\n");
 
   let mfg = "";
@@ -73,7 +102,10 @@ function guessMetaFromText(text: string): Partial<Meta> {
     .split("\n")
     .filter((l) => /^[A-Z0-9 ()&.,/-]{6,}$/.test(l) && !/PRICE\s*LIST/i.test(l));
   if (capLines.length) {
-    mfg = capLines.sort((a, b) => b.length - a.length)[0].replace(/\s*[.,:;-]+$/, "").trim();
+    mfg = capLines
+      .sort((a, b) => b.length - a.length)[0]
+      .replace(/\s*[.,:;-]+$/, "")
+      .trim();
   }
 
   let validity = "";
@@ -90,27 +122,33 @@ function guessMetaFromText(text: string): Partial<Meta> {
   };
 }
 
+const labelFromContext = (context: string): "T1" | "T2" => {
+  if (/\b(MSRP|list|retail)\b/i.test(context)) return "T1";
+  if (/\b(net|dealer|trade|discount|offer)\b/i.test(context)) return "T2";
+  return "T2";
+};
+
 const makeRow = (
   meta: Meta,
   currency: PriceRow["ISOCurrency"],
   modelCode: string,
   desc: string,
-  priceToken: string
+  priceValue: number,
+  tier: "T1" | "T2"
 ): PriceRow => {
-  const price = parseMoney(priceToken);
   const description = desc.trim() || modelCode;
-  return {
+  const base: PriceRow = {
     Supplier: meta.supplier || "",
     Manufacturer: meta.manufacturer || "",
     ModelCode: modelCode,
     ModelDescription: description,
     T1List: 0,
     T1Cost: 0,
-    T2List: price,
-    T2Cost: price,
+    T2List: 0,
+    T2Cost: 0,
     ISOCurrency: currency,
     ValidityDate: meta.validityDate || "",
-    T1orT2: "T2",
+    T1orT2: tier,
     MaterialID: modelCode,
     SAPNumber: modelCode,
     ModelDescriptionEnglish: description,
@@ -125,6 +163,14 @@ const makeRow = (
     PowerWatts: 0,
     FileName: meta.fileName,
   };
+  if (tier === "T1") {
+    base.T1List = priceValue;
+    base.T1Cost = priceValue;
+  } else {
+    base.T2List = priceValue;
+    base.T2Cost = priceValue;
+  }
+  return base;
 };
 
 function toBuffer(input: ArrayBuffer | Uint8Array | Buffer): Buffer {
@@ -136,20 +182,20 @@ function toBuffer(input: ArrayBuffer | Uint8Array | Buffer): Buffer {
   return Buffer.from(u8);
 }
 
-// -------- main API (server) --------
+/* ----------------------- main API ----------------------- */
+
 export async function extractFromPdf(
   file: ArrayBuffer | Uint8Array | Buffer,
   meta: Meta
 ): Promise<PriceRow[]> {
+  // parse PDF text using the safe CJS wrapper (avoids pdf-parse debug ENOENT)
   const buf = toBuffer(file);
-
-  // Use the CJS wrapper; it auto-selects a valid pdfjs-dist path
   const parsed = await pdfParse(buf);
-  const text = parsed.text || "";
-  const currency = currencyFromText(text);
+  const fullText = parsed.text || "";
+  const currency = currencyFromText(fullText);
 
   // Merge optional user meta with guesses
-  const guessed = guessMetaFromText(text);
+  const guessed = guessMetaFromText(fullText);
   const mergedMeta: Meta = {
     supplier: meta.supplier || guessed.supplier || "",
     manufacturer: meta.manufacturer || guessed.manufacturer || "",
@@ -157,7 +203,11 @@ export async function extractFromPdf(
     fileName: meta.fileName,
   };
 
-  const lines = text.split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
+  // break into lines, remove obvious header/footer noise
+  const lines = fullText
+    .split(/\r?\n/)
+    .map((l) => l.trim())
+    .filter((l) => l && !isBoilerplate(l));
 
   const rows: PriceRow[] = [];
   let contextCodes: string[] = [];
@@ -169,33 +219,47 @@ export async function extractFromPdf(
       .filter((c) => /[A-Za-z]/.test(c) && /\d/.test(c));
     if (codes.length) contextCodes = codes.slice(-6);
 
+    // description context without numbers that look like prices
     const cleaned = line.replace(PRICE_RX, "").trim();
     if (cleaned) {
       contextDesc.push(cleaned);
-      if (contextDesc.length > 4) contextDesc.shift();
+      if (contextDesc.length > 6) contextDesc.shift();
     }
   };
 
   for (const line of lines) {
     pushContext(line);
 
-    const priceMatches = Array.from(line.matchAll(PRICE_RX))
+    const rawPrices = Array.from(line.matchAll(PRICE_RX))
       .map((m) => m[1])
-      .filter(Boolean);
-    if (!priceMatches.length) continue;
+      .filter(isLikelyPrice);
+    if (!rawPrices.length) continue;
 
-    for (const priceToken of priceMatches) {
-      const model =
-        contextCodes[contextCodes.length - 1] || `ITEM_${rows.length + 1}`;
-      const desc = contextDesc.slice(-2).join(" ") || "Price Item";
-      rows.push(makeRow(mergedMeta, currency, model, desc, priceToken));
+    for (const token of rawPrices) {
+      const model = contextCodes[contextCodes.length - 1] || `ITEM_${rows.length + 1}`;
+      const desc = contextDesc.slice(-3).join(" ") || "Price Item";
+      const tier = labelFromContext(contextDesc.slice(-4).join(" ") + " " + line);
+      const price = parseMoney(token);
+
+      if (price === 0) continue; // skip junk like "0,00" padding
+
+      rows.push(makeRow(mergedMeta, currency, model, desc, price, tier));
     }
   }
 
-  // de-dup: model+price
+  // de-dup: include description fragment & currency to avoid over-collapsing
+  const dedupKey = (r: PriceRow) =>
+    [
+      r.ModelCode.trim(),
+      r.ModelDescription.replace(/\s+/g, " ").trim().slice(0, 80),
+      r.T1orT2,
+      r.T1List || r.T2List,
+      r.ISOCurrency,
+    ].join("|");
+
   const seen = new Set<string>();
   const deduped = rows.filter((r) => {
-    const key = `${r.ModelCode}|${r.T2List}`;
+    const key = dedupKey(r);
     if (seen.has(key)) return false;
     seen.add(key);
     return true;
