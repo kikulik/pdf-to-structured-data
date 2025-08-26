@@ -4,7 +4,6 @@ import { useCallback, useState } from "react";
 import { useDropzone } from "react-dropzone";
 import { Button } from "./ui/button";
 import { Upload as UploadIcon, File as FileIcon, X } from "lucide-react";
-import PdfViewer from "./PdfViewer";
 
 interface FileUploadProps {
   onFileSelect: (file: File) => void;
@@ -22,14 +21,12 @@ export function formatFileSize(bytes: number): string {
 
 export function FileUpload({ onFileSelect }: FileUploadProps) {
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
-  const [file, setFile] = useState<File | null>(null);
 
   const onDrop = useCallback(
     (acceptedFiles: File[]) => {
       const file = acceptedFiles[0];
       setSelectedFile(file);
       onFileSelect(file);
-      setFile(file);
     },
     [onFileSelect]
   );
@@ -44,7 +41,7 @@ export function FileUpload({ onFileSelect }: FileUploadProps) {
   });
 
   return (
-    <div className={`"w-full min-h-[150px] `}>
+    <div className="w-full">
       {!selectedFile ? (
         <div
           {...getRootProps()}
@@ -58,7 +55,7 @@ export function FileUpload({ onFileSelect }: FileUploadProps) {
           <input {...getInputProps()} />
           <div className="flex flex-row items-center">
             <UploadIcon className="w-8 h-8 text-primary mr-3 flex-shrink-0" />
-            <div className="">
+            <div>
               <p className="text-sm font-medium text-foreground">
                 Drop your PDF here or click to browse
               </p>
@@ -79,8 +76,6 @@ export function FileUpload({ onFileSelect }: FileUploadProps) {
               {formatFileSize(selectedFile?.size ?? 0)}
             </p>
           </div>
-          {file && <PdfViewer file={file} />}
-
           <Button
             variant="ghost"
             size="icon"
