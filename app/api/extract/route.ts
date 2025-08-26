@@ -1,5 +1,9 @@
 import { NextResponse } from "next/server";
-import { GoogleGenerativeAI, type GenerateContentResult } from "@google/generative-ai";
+import {
+  GoogleGenerativeAI,
+  type GenerateContentResult,
+  type ResponseSchema,
+} from "@google/generative-ai";
 
 export const dynamic = "force-dynamic";
 
@@ -50,6 +54,10 @@ function tryParseJSON(raw: string): unknown | undefined {
   return undefined;
 }
 
+function isPlainObject(x: unknown): x is Record<string, unknown> {
+  return typeof x === "object" && x !== null && !Array.isArray(x);
+}
+
 export async function POST(request: Request) {
   try {
     const genAI = getGenAI();
@@ -64,26 +72,30 @@ export async function POST(request: Request) {
     const MAX_BYTES = 100 * 1024 * 1024;
     if (file.size > MAX_BYTES) return NextResponse.json({ error: "File too large." }, { status: 413 });
 
-    let schema: unknown;
+    // Parse and validate schema shape before passing to SDK
+    let schemaParsed: unknown;
     try {
-      schema = JSON.parse(schemaRaw);
+      schemaParsed = JSON.parse(schemaRaw);
     } catch {
       return NextResponse.json({ error: "Invalid JSON schema." }, { status: 400 });
     }
+    if (!isPlainObject(schemaParsed)) {
+      return NextResponse.json({ error: "Schema must be a JSON object." }, { status: 400 });
+    }
+    const responseSchema: ResponseSchema = schemaParsed as ResponseSchema;
 
     const model = genAI.getGenerativeModel({
       model: MODEL_ID,
-      // low-temp, enforce JSON; also pass schema so the model knows the shape
       generationConfig: {
         temperature: 0,
         responseMimeType: "application/json",
-        responseSchema: schema,
+        responseSchema, // <- now properly typed
       },
       // (optional) steer the model even harder
-      // @ts-expect-error systemInstruction is supported by the SDK version in package.json
+      // @ts-expect-error systemInstruction exists in this SDK version
       systemInstruction:
         "You convert a PDF into structured data. Return ONLY valid JSON that matches the provided schema. " +
-        "Do not include markdown fences, comments, or additional fields. " +
+        "Do not include markdown code fences, comments, or extra fields. " +
         "If a table cell lists multiple model codes separated by '/', output them as separate items with identical fields except ModelCode. " +
         "Fill numeric fields with 0 when missing. Use ISO currency like EUR, USD, GBP.",
     });
