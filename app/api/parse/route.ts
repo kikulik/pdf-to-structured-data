@@ -17,9 +17,17 @@ export async function POST(req: Request) {
     if (!file) {
       return NextResponse.json({ error: "No file provided" }, { status: 400 });
     }
+    if (file.size === 0) {
+      return NextResponse.json({ error: "Uploaded file is empty." }, { status: 400 });
+    }
 
     const arrayBuffer = await file.arrayBuffer();
-    const items = await extractFromPdf(arrayBuffer, {
+    const bytes = new Uint8Array(arrayBuffer);
+    if (bytes.byteLength === 0) {
+      return NextResponse.json({ error: "Received 0 bytes from upload." }, { status: 400 });
+    }
+
+    const items = await extractFromPdf(bytes, {
       supplier,
       manufacturer,
       validityDate,
