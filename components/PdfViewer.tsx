@@ -6,7 +6,6 @@ import "react-pdf/dist/esm/Page/AnnotationLayer.css";
 import "react-pdf/dist/esm/Page/TextLayer.css";
 import { useResizeObserver } from "@wojtekmaj/react-hooks";
 
-import type { PDFDocumentProxy } from "pdfjs-dist";
 import {
   Sheet,
   SheetContent,
@@ -15,6 +14,7 @@ import {
   SheetTrigger,
 } from "./ui/sheet";
 
+// Use JS worker (works better with Next/Turbopack)
 pdfjs.GlobalWorkerOptions.workerSrc = new URL(
   "pdfjs-dist/build/pdf.worker.min.js",
   import.meta.url
@@ -30,18 +30,16 @@ export default function PdfViewer({ file }: { file: File }) {
   const [containerRef, setContainerRef] = useState<HTMLElement | null>(null);
   const [containerWidth, setContainerWidth] = useState<number>();
 
-  // Add resize observer
   const onResize = useCallback<ResizeObserverCallback>((entries) => {
     const [entry] = entries;
-    if (entry) {
-      setContainerWidth(entry.contentRect.width);
-    }
+    if (entry) setContainerWidth(entry.contentRect.width);
   }, []);
 
   useResizeObserver(containerRef, {}, onResize);
 
-  async function onDocumentLoadSuccess(page: PDFDocumentProxy): Promise<void> {
-    setNumPages(page._pdfInfo.numPages);
+  // ✅ Don’t import PDFDocumentProxy from pdfjs-dist; use a structural type.
+  function onDocumentLoadSuccess({ numPages }: { numPages: number }): void {
+    setNumPages(numPages);
   }
 
   return (
