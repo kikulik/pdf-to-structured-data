@@ -20,9 +20,7 @@ type ItemsPayload = {
   items?: PriceRow[] | Record<string, PriceRow>;
 };
 
-type AIResponse = {
-  items?: unknown;
-} | unknown;
+type AIContainer = { items?: unknown };
 
 // tiny runtime helpers to keep TS strict & eslint happy
 const toStr = (v: unknown) => (v == null ? "" : String(v));
@@ -33,8 +31,13 @@ const toNum = (v: unknown) => {
 };
 const toISO3 = (v: unknown): "EUR" | "USD" | "GBP" => {
   const s = String(v ?? "").toUpperCase();
-  return s === "USD" || s === "GBP" ? (s as any) : "EUR";
+  if (s === "EUR" || s === "USD" || s === "GBP") return s as "EUR" | "USD" | "GBP";
+  return "EUR";
 };
+
+function hasItems(x: unknown): x is AIContainer {
+  return typeof x === "object" && x !== null && "items" in x;
+}
 
 // JSON Schema for AI route (inlined so this file is self-contained)
 function buildPriceRowSchema() {
@@ -163,21 +166,23 @@ export default function Home() {
 
       const res = await fetch("/api/extract", { method: "POST", body: fd });
       if (!res.ok) {
-        const j = await res.json().catch(() => ({}));
-        throw new Error(j?.detail || j?.error || "AI extraction failed.");
+        const j: unknown = await res.json().catch(() => ({}));
+        const msg =
+          (typeof j === "object" && j && "detail" in j && typeof (j as { detail: unknown }).detail === "string"
+            ? (j as { detail: string }).detail
+            : typeof j === "object" && j && "error" in j && typeof (j as { error: unknown }).error === "string"
+            ? (j as { error: string }).error
+            : "AI extraction failed.");
+        throw new Error(msg);
       }
 
-      const data: AIResponse = await res.json();
+      const data: unknown = await res.json();
 
       // Accept either { items: [...] } or a bare array
-      const itemsAny =
-        (data && typeof data === "object" && "items" in (data as any)
-          ? (data as any).items
-          : data) ?? [];
+      const candidate: unknown = hasItems(data) ? (data as AIContainer).items : data;
+      const itemsUnknown: unknown[] = Array.isArray(candidate) ? candidate : [];
 
-      const items = Array.isArray(itemsAny) ? itemsAny : [];
-
-      const normalized: PriceRow[] = items.map((rUnknown) => {
+      const normalized: PriceRow[] = itemsUnknown.map((rUnknown) => {
         const r = rUnknown as Record<string, unknown>;
 
         const currency = toISO3(r.ISOCurrency);
@@ -186,7 +191,9 @@ export default function Home() {
         );
 
         const modelCode = toStr(r.ModelCode);
-        const tier = (toStr(r.T1orT2) === "T1" ? "T1" : (toStr(r.T1orT2) === "T2" ? "T2" : (toNum(r.T2List) ? "T2" : "T1"))) as "T1" | "T2";
+        const t = toStr(r.T1orT2);
+        const tier: "T1" | "T2" =
+          t === "T1" ? "T1" : t === "T2" ? "T2" : toNum(r.T2List) ? "T2" : "T1";
 
         const base: PriceRow = {
           Supplier: toStr(r.Supplier) || meta.supplier || "",
@@ -249,7 +256,7 @@ export default function Home() {
             </span>
           </CardHeader>
 
-          <CardContent className="space-y-6">
+        <CardContent className="space-y-6">
             <FileUpload onFileSelect={handleFileSelect} />
             <MetaForm onChange={setMeta} />
 
