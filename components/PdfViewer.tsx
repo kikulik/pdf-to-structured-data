@@ -37,6 +37,10 @@ type PDFDocProxy = {
 };
 type GetDocumentReturn = { promise: Promise<PDFDocProxy> };
 type GetDocumentFn = (src: { data: Uint8Array }) => GetDocumentReturn;
+type PdfJsBuild = {
+  GlobalWorkerOptions: { workerSrc: string };
+  getDocument: GetDocumentFn;
+};
 
 export default function PdfViewer({ file }: { file: File }) {
   const [bytes, setBytes] = useState<Uint8Array | null>(null);
@@ -103,10 +107,8 @@ export default function PdfViewer({ file }: { file: File }) {
 
     (async () => {
       try {
-        const pdfMod = (await import("pdfjs-dist/build/pdf.mjs")) as unknown as {
-          GlobalWorkerOptions: { workerSrc: string };
-          getDocument: GetDocumentFn;
-        };
+        // Use the runtime-available build and satisfy TypeScript via ambient types
+        const pdfMod = (await import("pdfjs-dist/build/pdf")) as unknown as PdfJsBuild;
 
         // worker for fallback path as well
         pdfMod.GlobalWorkerOptions.workerSrc = new URL(
@@ -122,7 +124,7 @@ export default function PdfViewer({ file }: { file: File }) {
         wrap.innerHTML = "";
 
         // Scale canvas to container width if possible
-        const targetWidth = (containerRef?.clientWidth ?? 800);
+        const targetWidth = containerRef?.clientWidth ?? 800;
         for (let i = 1; i <= pdf.numPages; i++) {
           const page = await pdf.getPage(i);
           const viewport0 = page.getViewport({ scale: 1.0 });
