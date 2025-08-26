@@ -180,6 +180,23 @@ export default function Home() {
             : "AI extraction failed.");
         throw new Error(msg);
       }
+      const j = await res.json().catch(() => ({} as any));
+      const text = typeof j?.detail === "string" ? j.detail : "";
+      try {
+        // reuse the same recovery idea
+        const candidate = JSON.parse(text);                  // try direct
+        const items = Array.isArray(candidate) ? candidate
+          : (candidate?.items && Array.isArray(candidate.items)) ? candidate.items
+          : null;
+        if (items) {
+          // ...normalize and setRows(items) like you do now
+          // and simply return (don’t throw)
+          return;
+        }
+      } catch {}
+      throw new Error(
+        (j?.error as string) || "AI extraction failed."
+      );
 
       const data: unknown = await res.json();
 
