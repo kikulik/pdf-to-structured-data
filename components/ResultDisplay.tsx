@@ -23,7 +23,9 @@ export default function ResultDisplay({ rows }: { rows: PriceRow[] }) {
     const wb = XLSX.utils.book_new();
     XLSX.utils.book_append_sheet(wb, ws, "Prices");
     const out = XLSX.write(wb, { bookType: "xlsx", type: "array" });
-    const blob = new Blob([out], { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" });
+    const blob = new Blob([out], {
+      type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    });
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
     a.href = url;
@@ -34,15 +36,24 @@ export default function ResultDisplay({ rows }: { rows: PriceRow[] }) {
 
   return (
     <div className="space-y-3">
-      <div className="flex gap-2">
-        <button className="border px-3 py-2 rounded" onClick={downloadJSON}>Download JSON</button>
-        <button className="border px-3 py-2 rounded" onClick={downloadXLSX}>Download XLSX</button>
+      <div className="flex items-center justify-between">
+        <div className="text-sm opacity-70">
+          Showing {Math.min(rows.length, 500)} of {rows.length} rows
+        </div>
+        <div className="flex gap-2">
+          <button className="border px-3 py-2 rounded" onClick={downloadJSON}>
+            Download JSON
+          </button>
+          <button className="border px-3 py-2 rounded" onClick={downloadXLSX}>
+            Download XLSX
+          </button>
+        </div>
       </div>
 
       <div className="overflow-auto border rounded">
         <table className="min-w-full text-sm">
-          <thead className="bg-gray-50 sticky top-0">
-            <tr>
+          <thead className="sticky top-0">
+            <tr className="bg-muted text-slate-900 dark:text-foreground">
               {keys.map((k) => (
                 <th key={String(k)} className="text-left px-3 py-2 whitespace-nowrap">
                   {String(k)}
@@ -50,9 +61,12 @@ export default function ResultDisplay({ rows }: { rows: PriceRow[] }) {
               ))}
             </tr>
           </thead>
-          <tbody>
+          <tbody className="text-slate-900 dark:text-foreground">
             {rows.slice(0, 500).map((r, i) => (
-              <tr key={i} className="odd:bg-white even:bg-gray-50">
+              <tr
+                key={i}
+                className="odd:bg-slate-50 even:bg-slate-100 dark:odd:bg-slate-900/40 dark:even:bg-slate-900/20"
+              >
                 {keys.map((k) => (
                   <td key={String(k)} className="px-3 py-2 whitespace-nowrap">
                     {String(r[k] ?? "")}
