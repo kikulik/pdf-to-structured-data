@@ -1,4 +1,5 @@
 // lib/priceExtractor.ts
+import { Buffer } from "node:buffer";
 
 // --- output row schema (matches your target structure) ---
 export type PriceRow = {
@@ -126,18 +127,22 @@ const makeRow = (
 };
 
 // -------- main API (server) --------
- export async function extractFromPdf(
+export async function extractFromPdf(
   file: ArrayBuffer | Uint8Array,
   meta: Meta
 ): Promise<PriceRow[]> {
   const { default: pdfParse } = await import("pdf-parse");
-  // Normalize to a Node Buffer — some pdf-parse versions are picky.
+
+  // Normalize + validate input
   const u8 = file instanceof Uint8Array ? file : new Uint8Array(file);
   if (u8.byteLength === 0) {
     throw new Error("Uploaded PDF is empty (0 bytes).");
   }
+
+  // pdf-parse is most reliable with a Node Buffer
   const buf = Buffer.from(u8);
   const parsed = await pdfParse(buf);
+
   const text = parsed.text || "";
   const currency = currencyFromText(text);
 
